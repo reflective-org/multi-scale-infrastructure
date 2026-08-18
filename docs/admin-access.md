@@ -35,7 +35,9 @@ aws ec2-instance-connect ssh --instance-id i-0123456789abcdef0 --os-user ec2-use
 ```
 
 This generates an ephemeral key, pushes the public half to the instance, and
-opens the SSH session in one step.
+opens the SSH session in one step. The runtime stack prints this command
+pre-filled for every launched instance — see the `connect_commands_eic`
+output (`tofu output connect_commands_eic`).
 
 ### Manual flow
 
