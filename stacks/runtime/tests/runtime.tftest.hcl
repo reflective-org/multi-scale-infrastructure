@@ -2,11 +2,17 @@
 # No run here ever touches a real AWS account.
 
 mock_provider "aws" {
+  # Baseline reservation: active, with exactly the default instance_count
+  # available, so runs that don't care about capacity neither trip the launch
+  # preconditions nor the under-subscription check. Runs that do care carry
+  # their own run-level override_data.
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone = "us-east-1b"
-      state             = "active"
+      availability_zone        = "us-east-1b"
+      state                    = "active"
+      available_instance_count = 1
+      instance_type            = "p5.48xlarge"
     }
   }
 
@@ -14,6 +20,13 @@ mock_provider "aws" {
     target = data.aws_ip_ranges.ec2_instance_connect
     values = {
       cidr_blocks = ["18.206.107.24/29"]
+    }
+  }
+
+  override_data {
+    target = data.aws_ssm_parameter.dlami
+    values = {
+      value = "ami-0123456789abcdef0"
     }
   }
 }
@@ -137,5 +150,218 @@ run "lustre_rules_self_referencing_only" {
   assert {
     condition     = aws_vpc_security_group_ingress_rule.lustre_1018_1023.from_port == 1018 && aws_vpc_security_group_ingress_rule.lustre_1018_1023.to_port == 1023
     error_message = "Lustre auxiliary rule must cover exactly TCP 1018-1023."
+  }
+}
+
+# 9. Active reservation + defaults → exactly one instance, capacity-block
+#    market type, targeted at the reservation, on the default AL2 DLAMI path
+#    (R3, R4, AE3).
+run "active_block_launches_one_instance" {
+  command = plan
+
+  assert {
+    condition     = length(aws_instance.gpu) == 1
+    error_message = "Exactly one instance must be planned by default (launch_instance = true, instance_count = 1)."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].instance_market_options[0].market_type == "capacity-block"
+    error_message = "Instances must use the capacity-block market type."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].capacity_reservation_specification[0].capacity_reservation_target[0].capacity_reservation_id == "cr-0123456789abcdef0"
+    error_message = "Instances must target the supplied capacity reservation ID."
+  }
+
+  assert {
+    condition     = data.aws_ssm_parameter.dlami[0].name == "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-amazon-linux-2/latest/ami-id"
+    error_message = "The default ami_flavor must resolve the AL2 DLAMI SSM path."
+  }
+}
+
+# 10. Scheduled (not yet active) block + launch_instance = true → the launch
+#     precondition fails with the legible wait-or-preprovision message (AE5,
+#     KTD9 red-proof).
+run "scheduled_block_fails_precondition" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_capacity_block_reservation.this
+    values = {
+      availability_zone        = "us-east-1b"
+      state                    = "scheduled"
+      available_instance_count = 1
+      instance_type            = "p5.48xlarge"
+    }
+  }
+
+  expect_failures = [
+    aws_instance.gpu,
+  ]
+}
+
+# 11. launch_instance = false → zero instances, and the plan succeeds even
+#     against a still-scheduled block: the pre-provisioning path (AE5, KTD9).
+run "pre_provisioning_before_block_start" {
+  command = plan
+
+  variables {
+    launch_instance = false
+  }
+
+  override_data {
+    target = data.aws_ec2_capacity_block_reservation.this
+    values = {
+      availability_zone        = "us-east-1b"
+      state                    = "scheduled"
+      available_instance_count = 1
+      instance_type            = "p5.48xlarge"
+    }
+  }
+
+  assert {
+    condition     = length(aws_instance.gpu) == 0
+    error_message = "No instance may be planned while launch_instance = false."
+  }
+}
+
+# 12. instance_count above the reservation's available capacity → the
+#     capacity precondition fails (KTD9).
+run "over_subscription_fails_precondition" {
+  command = plan
+
+  variables {
+    instance_count = 3
+  }
+
+  override_data {
+    target = data.aws_ec2_capacity_block_reservation.this
+    values = {
+      availability_zone        = "us-east-1b"
+      state                    = "active"
+      available_instance_count = 2
+      instance_type            = "p5.48xlarge"
+    }
+  }
+
+  expect_failures = [
+    aws_instance.gpu,
+  ]
+}
+
+# 13. instance_count below available capacity → the under-subscription check
+#     warns about the already-paid-for idle capacity (R10). The test framework
+#     surfaces the check warning as an expected failure.
+run "under_subscription_warns" {
+  command = plan
+
+  override_data {
+    target = data.aws_ec2_capacity_block_reservation.this
+    values = {
+      availability_zone        = "us-east-1b"
+      state                    = "active"
+      available_instance_count = 2
+      instance_type            = "p5.48xlarge"
+    }
+  }
+
+  expect_failures = [
+    check.capacity_block_under_subscribed,
+  ]
+
+  assert {
+    condition     = length(aws_instance.gpu) == 1
+    error_message = "Under-subscription must warn, not block: the single instance must still be planned."
+  }
+}
+
+# 14. ami_flavor = "al2023" resolves the AL2023 DLAMI SSM path (R4, KTD3).
+run "al2023_flavor_resolves_al2023_path" {
+  command = plan
+
+  variables {
+    ami_flavor = "al2023"
+  }
+
+  assert {
+    condition     = strcontains(data.aws_ssm_parameter.dlami[0].name, "amazon-linux-2023")
+    error_message = "ami_flavor = \"al2023\" must resolve the AL2023 DLAMI SSM path."
+  }
+}
+
+# 15. Explicit ami_id bypasses SSM entirely (KTD3): zero SSM lookups, and the
+#     instance runs exactly the pinned AMI.
+run "explicit_ami_id_bypasses_ssm" {
+  command = plan
+
+  variables {
+    ami_id = "ami-0fedcba9876543210"
+  }
+
+  assert {
+    condition     = length(data.aws_ssm_parameter.dlami) == 0
+    error_message = "No SSM parameter lookup may be planned when ami_id is set."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].ami == "ami-0fedcba9876543210"
+    error_message = "The instance must run the explicitly pinned AMI."
+  }
+}
+
+# 16. instance_count = 2 within available capacity → two instances sharing
+#     subnet, SG, and key pair.
+run "multi_instance_launch" {
+  command = plan
+
+  variables {
+    instance_count = 2
+  }
+
+  override_data {
+    target = data.aws_ec2_capacity_block_reservation.this
+    values = {
+      availability_zone        = "us-east-1b"
+      state                    = "active"
+      available_instance_count = 2
+      instance_type            = "p5.48xlarge"
+    }
+  }
+
+  assert {
+    condition     = length(aws_instance.gpu) == 2
+    error_message = "Exactly two instances must be planned when instance_count = 2."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].instance_market_options[0].market_type == "capacity-block" && aws_instance.gpu[1].instance_market_options[0].market_type == "capacity-block"
+    error_message = "Every instance must use the capacity-block market type."
+  }
+}
+
+# 17. Hardening: IMDSv2 is mandatory and the root volume is an encrypted gp3
+#     that dies with the instance (security amendments to U4).
+run "imdsv2_and_encrypted_root_volume" {
+  command = plan
+
+  assert {
+    condition     = aws_instance.gpu[0].metadata_options[0].http_tokens == "required"
+    error_message = "IMDSv2 must be mandatory (http_tokens = \"required\")."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].metadata_options[0].http_endpoint == "enabled" && aws_instance.gpu[0].metadata_options[0].http_put_response_hop_limit == 2
+    error_message = "IMDS must stay enabled with hop limit 2 for containerized workloads."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].root_block_device[0].encrypted == true && aws_instance.gpu[0].root_block_device[0].delete_on_termination == true
+    error_message = "The root volume must be encrypted and delete on termination."
+  }
+
+  assert {
+    condition     = aws_instance.gpu[0].root_block_device[0].volume_type == "gp3" && aws_instance.gpu[0].root_block_device[0].volume_size == 100
+    error_message = "The root volume must be a gp3 of the default 100 GiB."
   }
 }

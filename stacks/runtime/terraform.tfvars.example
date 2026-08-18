@@ -34,6 +34,30 @@ region = "us-east-1"
 # Name used when registering public_key (ignored for option B):
 # key_pair_name = "multi-scale-gpu"
 
+# --- Instances -------------------------------------------------------------
+# Instances launch only while the capacity block is "active". Before the
+# block's start time, set launch_instance = false to pre-provision networking
+# (and later FSx) so training data can be staged before the clock starts;
+# flip it back to true once the block is active.
+# launch_instance = true
+#
+# How many instances to launch into the block (1-64, and at most the
+# reservation's available capacity). Under-subscribing a block wastes
+# already-paid-for capacity — a plan-time warning will say so.
+# instance_count = 1
+#
+# AMI generation. "al2" (default, per R4) is the AL2 Deep Learning Base OSS
+# NVIDIA Driver AMI — FROZEN since June 2026 (AL2 end of life), so it gets
+# no security patches. "al2023" is the patched alternative.
+# ami_flavor = "al2"
+#
+# Or pin an exact AMI and bypass SSM resolution (and ami_flavor) entirely:
+# ami_id = "ami-0123456789abcdef0"
+#
+# Root gp3 volume size in GiB (minimum 100 — the DLAMI needs headroom). The
+# root volume dies with the instance when the block ends; only /data survives.
+# root_volume_size_gib = 100
+
 # --- Tags ------------------------------------------------------------------
 # Extra tags merged onto every resource.
 # tags = { Owner = "you" }
