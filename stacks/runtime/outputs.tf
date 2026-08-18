@@ -47,3 +47,23 @@ output "connect_commands_ssh" {
   description = "Ready-to-paste plain ssh commands, one per instance (your IP must be in admin_cidr_blocks)."
   value       = [for i in aws_instance.gpu : "ssh ec2-user@${i.public_dns}"]
 }
+
+output "fsx_file_system_id" {
+  description = "ID of the FSx for Lustre file system. Null while enable_fsx = false."
+  value       = one(aws_fsx_lustre_file_system.data[*].id)
+}
+
+output "fsx_dns_name" {
+  description = "DNS name of the FSx for Lustre file system. Null while enable_fsx = false."
+  value       = one(aws_fsx_lustre_file_system.data[*].dns_name)
+}
+
+output "fsx_mount_name" {
+  description = "AWS-generated Lustre mount name of the file system. Null while enable_fsx = false."
+  value       = one(aws_fsx_lustre_file_system.data[*].mount_name)
+}
+
+output "fsx_manual_mount_command" {
+  description = "Exact command to mount /data on an instance that was already running when FSx was enabled (user_data runs once — see docs/runbooks.md; install the Lustre client first). Null while enable_fsx = false."
+  value       = var.enable_fsx ? "sudo mkdir -p /data && sudo mount -t lustre -o relatime,flock ${local.fsx_dns_name}@tcp:/${local.fsx_mount_name} /data" : null
+}

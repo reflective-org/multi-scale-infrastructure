@@ -130,4 +130,56 @@ variable "root_volume_size_gib" {
   }
 }
 
-# FSx variables are appended by U5.
+# ---------------------------------------------------------------------------
+# FSx for Lustre (optional, R7/KTD7)
+# ---------------------------------------------------------------------------
+
+variable "enable_fsx" {
+  description = "Provision an S3-linked FSx for Lustre file system mounted at /data. FSx bills continuously from creation. WARNING: disabling this on a live deployment DESTROYS the file system — verify DRA export to S3 has caught up first (docs/runbooks.md). Enabling it after instances are already running does NOT mount /data on them (user_data runs once) — mount manually per the runbook, or launch FSx before the instances."
+  type        = bool
+  default     = false
+}
+
+variable "fsx_s3_bucket" {
+  description = "Bare name of the S3 bucket to link at /data (e.g. \"my-training-data\" — not an s3:// URI). Required when enable_fsx is true. The bucket must be in the same region as the capacity block — a wrong-region bucket fails at DRA creation, after FSx has already started billing."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.enable_fsx || var.fsx_s3_bucket != null
+    error_message = "fsx_s3_bucket is required when enable_fsx is true: name the S3 bucket to link at /data."
+  }
+
+  validation {
+    condition     = var.fsx_s3_bucket == null || can(regex("^[^/:]+$", coalesce(var.fsx_s3_bucket, "/")))
+    error_message = "fsx_s3_bucket must be a bare bucket name (e.g. \"my-training-data\"), not an s3:// URI or a path — the s3:// prefix is added by the stack."
+  }
+}
+
+variable "fsx_storage_capacity_gib" {
+  description = "FSx for Lustre storage capacity in GiB. PERSISTENT_2 accepts exactly 1200, or any positive multiple of 2400. Capacity multiplied by fsx_per_unit_throughput drives the (continuous) FSx bill."
+  type        = number
+  default     = 1200
+
+  validation {
+    condition     = var.fsx_storage_capacity_gib == 1200 || (var.fsx_storage_capacity_gib > 0 && var.fsx_storage_capacity_gib % 2400 == 0)
+    error_message = "fsx_storage_capacity_gib must be exactly 1200 or a positive multiple of 2400 (2400, 4800, 7200, ...)."
+  }
+}
+
+variable "fsx_per_unit_throughput" {
+  description = "FSx per-unit storage throughput in MB/s per TiB of storage. PERSISTENT_2 tiers: 125, 250, 500, or 1000."
+  type        = number
+  default     = 250
+
+  validation {
+    condition     = contains([125, 250, 500, 1000], var.fsx_per_unit_throughput)
+    error_message = "fsx_per_unit_throughput must be one of 125, 250, 500, or 1000 (MB/s per TiB)."
+  }
+}
+
+variable "fsx_auto_export" {
+  description = "Automatically export new/changed/deleted files from /data back to the S3 bucket. Set false for a read-only training bucket that must never be written back to (import-only DRA)."
+  type        = bool
+  default     = true
+}

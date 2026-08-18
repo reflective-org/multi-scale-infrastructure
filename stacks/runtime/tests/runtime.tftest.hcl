@@ -29,6 +29,18 @@ mock_provider "aws" {
       value = "ami-0123456789abcdef0"
     }
   }
+
+  # The DRA's file_system_id is provider-validated to the fs- prefix at plan
+  # time, so the auto-generated mock id would be rejected. Well-formed mocked
+  # endpoints also keep the user_data seam assertable when FSx is enabled.
+  override_resource {
+    target = aws_fsx_lustre_file_system.data
+    values = {
+      id         = "fs-0123456789abcdef0"
+      dns_name   = "fs-0123456789abcdef0.fsx.us-east-1.amazonaws.com"
+      mount_name = "mockmnt"
+    }
+  }
 }
 
 variables {
@@ -364,4 +376,191 @@ run "imdsv2_and_encrypted_root_volume" {
     condition     = aws_instance.gpu[0].root_block_device[0].volume_type == "gp3" && aws_instance.gpu[0].root_block_device[0].volume_size == 100
     error_message = "The root volume must be a gp3 of the default 100 GiB."
   }
+}
+
+# 18. FSx disabled (the default) → zero FSx resources planned, and the
+#     rendered user_data carries no Lustre content at all (R7, AE4). The
+#     instance's user_data is assertable at plan time here because the
+#     disabled seam is a known empty string — nothing unknown feeds the
+#     template.
+run "fsx_disabled_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_fsx_lustre_file_system.data) == 0
+    error_message = "No FSx file system may be planned while enable_fsx = false (the default)."
+  }
+
+  assert {
+    condition     = length(aws_fsx_data_repository_association.s3) == 0
+    error_message = "No FSx data repository association may be planned while enable_fsx = false (the default)."
+  }
+
+  assert {
+    condition     = !strcontains(lower(aws_instance.gpu[0].user_data), "lustre")
+    error_message = "The rendered user_data must contain no Lustre content while FSx is disabled."
+  }
+}
+
+# 19. FSx enabled with a bucket → exactly one PERSISTENT_2 file system (at the
+#     1200 GiB default, which must pass validation) and one DRA rooted at the
+#     bucket (R7, KTD7, AE4). The instance's user_data is assertable here only
+#     because the file-level override_resource pins dns_name/mount_name to
+#     known values at plan; against real AWS they are computed.
+run "fsx_enabled_plans_file_system_and_dra" {
+  command = plan
+
+  variables {
+    enable_fsx    = true
+    fsx_s3_bucket = "multi-scale-training-data"
+  }
+
+  assert {
+    condition     = length(aws_fsx_lustre_file_system.data) == 1 && length(aws_fsx_data_repository_association.s3) == 1
+    error_message = "Exactly one FSx file system and one DRA must be planned when enable_fsx = true."
+  }
+
+  assert {
+    condition     = aws_fsx_lustre_file_system.data[0].deployment_type == "PERSISTENT_2"
+    error_message = "The file system must be PERSISTENT_2 — the only deployment type supporting DRA auto-export (KTD7)."
+  }
+
+  assert {
+    condition     = aws_fsx_lustre_file_system.data[0].storage_capacity == 1200 && aws_fsx_lustre_file_system.data[0].per_unit_storage_throughput == 250
+    error_message = "The default capacity (1200 GiB) and throughput (250 MB/s/TiB) must plan cleanly."
+  }
+
+  assert {
+    condition     = aws_fsx_data_repository_association.s3[0].data_repository_path == "s3://multi-scale-training-data"
+    error_message = "The DRA must be rooted at s3://<fsx_s3_bucket>."
+  }
+
+  assert {
+    condition     = aws_fsx_data_repository_association.s3[0].file_system_path == "/" && aws_fsx_data_repository_association.s3[0].batch_import_meta_data_on_create == true
+    error_message = "The DRA must link the file system root and batch-import the bucket's metadata on create."
+  }
+
+  assert {
+    condition     = tolist(aws_fsx_data_repository_association.s3[0].s3[0].auto_import_policy[0].events) == tolist(["NEW", "CHANGED", "DELETED"])
+    error_message = "Auto-import must cover NEW, CHANGED, and DELETED events."
+  }
+
+  assert {
+    condition     = length(aws_fsx_data_repository_association.s3[0].s3[0].auto_export_policy) == 1 && tolist(aws_fsx_data_repository_association.s3[0].s3[0].auto_export_policy[0].events) == tolist(["NEW", "CHANGED", "DELETED"])
+    error_message = "Auto-export must default on, covering NEW, CHANGED, and DELETED events."
+  }
+
+  # End-to-end through the user_data seam: the rendered script must carry the
+  # exact fstab entry — mocked endpoints, /data, and the mandatory _netdev.
+  assert {
+    condition     = strcontains(aws_instance.gpu[0].user_data, "fs-0123456789abcdef0.fsx.us-east-1.amazonaws.com@tcp:/mockmnt /data lustre defaults,relatime,flock,_netdev,x-systemd.automount 0 0")
+    error_message = "The rendered user_data must append the fstab entry built from the file system's dns_name and mount_name, mounted at /data with _netdev."
+  }
+}
+
+# 20. fsx_auto_export = false → import-only DRA: the s3 block carries an
+#     auto_import_policy but no auto_export_policy (KTD7 read-only bucket
+#     fork).
+run "fsx_import_only_when_auto_export_disabled" {
+  command = plan
+
+  variables {
+    enable_fsx      = true
+    fsx_s3_bucket   = "multi-scale-training-data"
+    fsx_auto_export = false
+  }
+
+  assert {
+    condition     = length(aws_fsx_data_repository_association.s3[0].s3[0].auto_export_policy) == 0
+    error_message = "No auto_export_policy may be planned when fsx_auto_export = false (read-only bucket)."
+  }
+
+  assert {
+    condition     = length(aws_fsx_data_repository_association.s3[0].s3[0].auto_import_policy) == 1
+    error_message = "The import policy must remain when fsx_auto_export = false."
+  }
+}
+
+# 21. Capacity 2000 is neither 1200 nor a multiple of 2400 → variable
+#     validation failure (red-proof for the capacity rule).
+run "fsx_capacity_2000_rejected" {
+  command = plan
+
+  variables {
+    enable_fsx               = true
+    fsx_s3_bucket            = "multi-scale-training-data"
+    fsx_storage_capacity_gib = 2000
+  }
+
+  expect_failures = [var.fsx_storage_capacity_gib]
+}
+
+# 22. Capacity 2400 (smallest multiple) plans cleanly.
+run "fsx_capacity_2400_accepted" {
+  command = plan
+
+  variables {
+    enable_fsx               = true
+    fsx_s3_bucket            = "multi-scale-training-data"
+    fsx_storage_capacity_gib = 2400
+  }
+
+  assert {
+    condition     = aws_fsx_lustre_file_system.data[0].storage_capacity == 2400
+    error_message = "2400 GiB is a valid PERSISTENT_2 capacity and must plan cleanly."
+  }
+}
+
+# 23. Capacity 4800 (larger multiple) plans cleanly.
+run "fsx_capacity_4800_accepted" {
+  command = plan
+
+  variables {
+    enable_fsx               = true
+    fsx_s3_bucket            = "multi-scale-training-data"
+    fsx_storage_capacity_gib = 4800
+  }
+
+  assert {
+    condition     = aws_fsx_lustre_file_system.data[0].storage_capacity == 4800
+    error_message = "4800 GiB is a valid PERSISTENT_2 capacity and must plan cleanly."
+  }
+}
+
+# 24. Throughput 300 is not a PERSISTENT_2 tier → variable validation failure.
+run "fsx_throughput_300_rejected" {
+  command = plan
+
+  variables {
+    enable_fsx              = true
+    fsx_s3_bucket           = "multi-scale-training-data"
+    fsx_per_unit_throughput = 300
+  }
+
+  expect_failures = [var.fsx_per_unit_throughput]
+}
+
+# 25. enable_fsx without a bucket → the cross-variable validation demands
+#     fsx_s3_bucket (red-proof for the required-when-enabled rule).
+run "fsx_enabled_without_bucket_rejected" {
+  command = plan
+
+  variables {
+    enable_fsx = true
+  }
+
+  expect_failures = [var.fsx_s3_bucket]
+}
+
+# 26. The bucket must be a bare name — an s3:// URI is rejected at the
+#     variable boundary (the stack adds the s3:// prefix itself).
+run "fsx_bucket_uri_rejected" {
+  command = plan
+
+  variables {
+    enable_fsx    = true
+    fsx_s3_bucket = "s3://multi-scale-training-data"
+  }
+
+  expect_failures = [var.fsx_s3_bucket]
 }

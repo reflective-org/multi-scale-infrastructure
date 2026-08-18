@@ -15,5 +15,5 @@ if ! rpm -q ec2-instance-connect >/dev/null 2>&1; then
   fi
 fi
 
-# --- FSx for Lustre mount (owned by fsx.tf, U5) -----------------------------
+# --- optional /data storage seam (rendered by stacks/runtime/fsx.tf) --------
 ${fsx_mount_snippet}

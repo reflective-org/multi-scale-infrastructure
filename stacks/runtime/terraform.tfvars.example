@@ -58,6 +58,34 @@ region = "us-east-1"
 # root volume dies with the instance when the block ends; only /data survives.
 # root_volume_size_gib = 100
 
+# --- FSx for Lustre at /data (optional) -------------------------------------
+# An S3-linked PERSISTENT_2 file system mounted at /data on every instance.
+# FSx bills continuously from the moment it is created (block active or not).
+#
+# TOGGLE WARNINGS:
+#   - Disabling enable_fsx on a live deployment DESTROYS the file system.
+#     Auto-export to S3 is asynchronous — verify the export has caught up
+#     before disabling (docs/runbooks.md).
+#   - Enabling FSx after instances are already running does NOT mount /data
+#     on them (user_data runs once). Mount manually with the
+#     fsx_manual_mount_command output, or launch FSx before the instances.
+# enable_fsx = false
+#
+# Bare bucket name (no s3:// prefix, no path). The bucket must be in the
+# same region as the capacity block — a wrong-region bucket fails at DRA
+# creation, after FSx has already started billing.
+# fsx_s3_bucket = "my-training-data"
+#
+# Storage capacity in GiB: exactly 1200, or a positive multiple of 2400.
+# fsx_storage_capacity_gib = 1200
+#
+# Throughput per TiB of storage: 125, 250, 500, or 1000 MB/s.
+# fsx_per_unit_throughput = 250
+#
+# Auto-export /data changes back to the bucket. Set false to keep a
+# read-only training bucket pristine (import-only).
+# fsx_auto_export = true
+
 # --- Tags ------------------------------------------------------------------
 # Extra tags merged onto every resource.
 # tags = { Owner = "you" }

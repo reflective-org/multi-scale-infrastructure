@@ -26,10 +26,6 @@ locals {
   # SSM parameter values are provider-marked sensitive; an AMI ID is not a
   # secret, so unmark it to keep plan output legible.
   ami_id = var.ami_id != null ? var.ami_id : nonsensitive(one(data.aws_ssm_parameter.dlami[*].value))
-
-  # Owned by fsx.tf from U5 onward: replaced there with the conditional
-  # Lustre client install + /data mount fragment. Empty until then.
-  fsx_mount_snippet = ""
 }
 
 resource "aws_instance" "gpu" {
@@ -76,6 +72,8 @@ resource "aws_instance" "gpu" {
     tags = merge(local.tags, { Name = "${local.name_prefix}-${count.index}-root" })
   }
 
+  # fsx_mount_snippet is owned by fsx.tf (U5): the conditional Lustre client
+  # install + /data mount fragment, empty while enable_fsx = false.
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     fsx_mount_snippet = local.fsx_mount_snippet
   })
