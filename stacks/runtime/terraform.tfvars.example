@@ -3,3 +3,37 @@
 # for the full launch workflow before applying anything.
 
 region = "us-east-1"
+
+# --- Capacity reservation (required) ------------------------------------
+# The capacity block to launch into: the purchase stack's reservation_id
+# output, or a previously purchased block. Everything (subnet AZ included)
+# is derived from this reservation.
+# capacity_reservation_id = "cr-0123456789abcdef0"
+
+# --- Networking ----------------------------------------------------------
+# CIDR for the stack's self-contained VPC. Default is fine unless it
+# collides with networks you plan to peer with.
+# vpc_cidr = "10.0.0.0/16"
+
+# --- Admin SSH access (see docs/admin-access.md) -------------------------
+# CLI-initiated `aws ec2-instance-connect ssh` and plain ssh connect from
+# YOUR IP, so list it here (`curl -s ifconfig.me`, then /32). The browser
+# console's EC2 Instance Connect needs no entry — the AWS service ranges
+# are always admitted. 0.0.0.0/0 and ::/0 are rejected by validation.
+# admin_cidr_blocks = ["203.0.113.7/32"]
+
+# --- Key pair (set exactly one of the two) --------------------------------
+# Option A: register a new key pair from a local public key. Generate one
+# with scripts/generate-key.sh — it prints this exact line. Only the public
+# key is registered; the private key never leaves your machine.
+# public_key = "ssh-ed25519 AAAA... you@host"
+#
+# Option B: reuse a key pair that already exists in this region.
+# existing_key_pair_name = "my-existing-key"
+#
+# Name used when registering public_key (ignored for option B):
+# key_pair_name = "multi-scale-gpu"
+
+# --- Tags ------------------------------------------------------------------
+# Extra tags merged onto every resource.
+# tags = { Owner = "you" }
