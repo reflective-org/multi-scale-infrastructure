@@ -6,6 +6,11 @@ locals {
   # Purchase happens only when the operator explicitly pins BOTH the reviewed
   # offering and its exact fee (R2/R10). Variable validation enforces the pair.
   purchase_confirmed = var.capacity_block_offering_id != null && var.expected_upfront_fee != null
+
+  # Fresh-lookup values consumed by the money gate below (null when search is
+  # disabled or returns nothing).
+  fresh_upfront_fee       = one(data.aws_ec2_capacity_block_offering.search[*].upfront_fee)
+  fresh_availability_zone = one(data.aws_ec2_capacity_block_offering.search[*].availability_zone)
 }
 
 # Free search (R1). Count-gated so the operator can turn it off after purchase:
@@ -48,19 +53,19 @@ resource "aws_ec2_capacity_block_reservation" "this" {
       condition = (
         !var.search_enabled
         || (
-          one(data.aws_ec2_capacity_block_offering.search[*].upfront_fee) == var.expected_upfront_fee
+          local.fresh_upfront_fee == var.expected_upfront_fee
           && (
             var.expected_availability_zone == null
-            || one(data.aws_ec2_capacity_block_offering.search[*].availability_zone) == var.expected_availability_zone
+            || local.fresh_availability_zone == var.expected_availability_zone
           )
         )
       )
       error_message = format(
         "Purchase blocked: the fresh offering lookup no longer matches the reviewed values. expected_upfront_fee=%q vs fresh upfront_fee=%q; expected_availability_zone=%q vs fresh availability_zone=%q. Re-run the search, review the new offering (fee, AZ, dates), and update capacity_block_offering_id + expected_upfront_fee before applying again.",
         coalesce(var.expected_upfront_fee, "null"),
-        coalesce(one(data.aws_ec2_capacity_block_offering.search[*].upfront_fee), "unknown"),
+        coalesce(local.fresh_upfront_fee, "unknown"),
         coalesce(var.expected_availability_zone, "any"),
-        coalesce(one(data.aws_ec2_capacity_block_offering.search[*].availability_zone), "unknown"),
+        coalesce(local.fresh_availability_zone, "unknown"),
       )
     }
   }
