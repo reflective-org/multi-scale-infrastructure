@@ -61,8 +61,14 @@ capacity_duration_hours = 24
 # ---------------------------------------------------------------------------
 
 # After the purchase succeeds, set search_enabled = false so drifted or empty
-# offering lookups can never block or disturb the existing reservation.
-# search_enabled = false
+# offering lookups can never block or disturb the existing reservation — and
+# at the same moment overwrite the offering ID with the sentinel below. Why:
+# with search off, fee verification is skipped, so these locked values against
+# a FRESH state (new workspace, re-clone) would otherwise purchase unverified;
+# the live reservation ignores the change (ignore_changes), while the
+# guaranteed-invalid sentinel makes any accidental purchase die at the AWS API.
+# search_enabled             = false
+# capacity_block_offering_id = "cbo-PURCHASED-see-state"
 
 # Tags applied to the reservation.
 # tags = {

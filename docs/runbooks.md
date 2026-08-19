@@ -38,7 +38,7 @@ Pre-purchase review checklist:
 
 - [ ] `offering_upfront_fee` (and `offering_currency_code`) — is this the money you intend to spend?
 - [ ] `offering_availability_zone` — everything in the runtime stack will live in this AZ.
-- [ ] `offering_start_date` / `offering_end_date` — is the window right? Instances terminate before the end date (runbook 4).
+- [ ] The offering's **actual start/end dates** — is the window right? Instances terminate before the end date (runbook 4). The stack cannot show these before purchase (`requested_start_date_range` / `requested_end_date_range` only echo your own search inputs): get them from `aws ec2 describe-capacity-block-offerings` before confirming. After purchase, `reservation_start_date` / `reservation_end_date` show the real dates.
 - [ ] **If FSx is planned:** the S3 bucket you will link at `/data` must live in the block's region. Check the bucket's region now, next to the fee and AZ — a wrong-region bucket fails only at DRA creation, after both the block and FSx are already billing.
 
 ### 1.3 Confirm — in the SAME session
@@ -61,7 +61,16 @@ The purchase is blocked with a readable error unless a **fresh** offering lookup
 
 ### 1.4 After success: lock the stack
 
-Set `search_enabled = false` in `terraform.tfvars`. Until you do, every plan warns:
+In `terraform.tfvars`, set `search_enabled = false` **and, at the same moment, overwrite the offering ID with a sentinel**:
+
+```hcl
+search_enabled             = false
+capacity_block_offering_id = "cbo-PURCHASED-see-state"
+```
+
+Why the sentinel: with search off, the fee-verification precondition short-circuits — so these locked tfvars replayed against a **fresh state** (new workspace, re-clone) would purchase a new block with zero verification. The live reservation ignores the change (`ignore_changes`), while any accidental fresh-state purchase dies at the AWS API on the guaranteed-invalid offering ID.
+
+Until you set `search_enabled = false`, every plan warns:
 
 > A capacity block reservation is configured while search_enabled is still true. …
 
@@ -190,13 +199,17 @@ cd stacks/purchase
 tofu destroy    # BLOCKED by prevent_destroy — this is BY DESIGN
 ```
 
-A capacity block reservation cannot be cancelled or refunded; it simply expires on its own at the end of its window. There is nothing in AWS to destroy — only a state entry to retire:
+A capacity block reservation cannot be cancelled or refunded; it simply expires on its own at the end of its window. There is nothing in AWS to destroy — only a state entry to retire.
+
+**First**, remove `capacity_block_offering_id` / `expected_upfront_fee` from `terraform.tfvars` (or confirm the offering ID is still the `"cbo-PURCHASED-see-state"` sentinel from runbook 1.4). Do this **before** touching state: with the reservation removed from state but confirmation variables still set, the very next plan would plan a fresh, unverified purchase.
+
+**Then** retire the state entry:
 
 ```bash
 tofu state rm 'aws_ec2_capacity_block_reservation.this[0]'
 ```
 
-Also remove `capacity_block_offering_id` / `expected_upfront_fee` from `terraform.tfvars`; the stack then plans clean. **Never edit the `lifecycle` block just to make `destroy` work** — the guard exists precisely so that no plausible-looking command sequence can appear to "undo" a non-refundable purchase.
+The stack then plans clean. **Never edit the `lifecycle` block just to make `destroy` work** — the guard exists precisely so that no plausible-looking command sequence can appear to "undo" a non-refundable purchase.
 
 ---
 

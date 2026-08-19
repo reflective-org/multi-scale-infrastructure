@@ -23,13 +23,13 @@ output "offering_availability_zone" {
   value       = one(data.aws_ec2_capacity_block_offering.search[*].availability_zone)
 }
 
-output "offering_start_date" {
-  description = "Start of the offered capacity block (RFC3339)."
+output "requested_start_date_range" {
+  description = "Echo of the operator's start_date_range search input (null when unset) — NOT the offering's actual start date. Get real dates from `aws ec2 describe-capacity-block-offerings` before confirming."
   value       = one(data.aws_ec2_capacity_block_offering.search[*].start_date_range)
 }
 
-output "offering_end_date" {
-  description = "End of the offered capacity block (RFC3339)."
+output "requested_end_date_range" {
+  description = "Echo of the operator's end_date_range search input (null when unset) — NOT the offering's actual end date. Get real dates from `aws ec2 describe-capacity-block-offerings` before confirming."
   value       = one(data.aws_ec2_capacity_block_offering.search[*].end_date_range)
 }
 

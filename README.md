@@ -57,10 +57,10 @@ An empty result can mean the wrong region for the chosen instance type, not "no 
 ```bash
 tofu output
 # offering_id, offering_upfront_fee, offering_currency_code,
-# offering_availability_zone, offering_start_date, offering_end_date
+# offering_availability_zone
 ```
 
-Check the fee, the AZ, the dates — and, if you plan to use FSx, that your S3 bucket lives in the same region as the block.
+Check the fee and the AZ — and, if you plan to use FSx, that your S3 bucket lives in the same region as the block. The outputs cannot show the offering's actual start/end dates: get them from `aws ec2 describe-capacity-block-offerings` before confirming (after purchase, `reservation_start_date` / `reservation_end_date` show the real dates).
 
 ### 3. Confirm the purchase — in the same session (spends money)
 
@@ -79,7 +79,7 @@ tofu output reservation_id    # feed this to the runtime stack
 
 ### 4. Lock the purchase stack
 
-In `terraform.tfvars`, set `search_enabled = false` (a check warns on every plan until you do). The stack is now write-once — a second block needs a fresh state or workspace ([runbook 1](docs/runbooks.md#1-purchase-a-capacity-block)).
+In `terraform.tfvars`, set `search_enabled = false` and overwrite the offering ID with the sentinel `capacity_block_offering_id = "cbo-PURCHASED-see-state"` (a check warns on every plan until search is off; the sentinel keeps locked tfvars from ever purchasing unverified against a fresh state — see [runbook 1.4](docs/runbooks.md#1-purchase-a-capacity-block)). The stack is now write-once — a second block needs a fresh state or workspace ([runbook 1](docs/runbooks.md#1-purchase-a-capacity-block)).
 
 ### 5. Optional: pre-provision before the block starts
 

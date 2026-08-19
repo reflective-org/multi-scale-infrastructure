@@ -50,6 +50,15 @@ resource "aws_ec2_capacity_block_reservation" "this" {
       # which is the backstop. When search_enabled = false (post-purchase)
       # this short-circuits to pass: an existing reservation must never be
       # blocked by a disabled or drifted search.
+      #
+      # CAUTION: the same short-circuit also skips fee verification for a NEW
+      # purchase — locked tfvars (search_enabled = false + both confirmation
+      # variables) replayed against fresh state would purchase with zero
+      # verification. That is why the lock step (runbook 1.4) overwrites
+      # capacity_block_offering_id with the sentinel "cbo-PURCHASED-see-state":
+      # ignore_changes swallows it on the live reservation, while any
+      # accidental fresh-state purchase dies at the AWS API on the
+      # guaranteed-invalid offering ID.
       condition = (
         !var.search_enabled
         || (
@@ -61,7 +70,7 @@ resource "aws_ec2_capacity_block_reservation" "this" {
         )
       )
       error_message = format(
-        "Purchase blocked: the fresh offering lookup no longer matches the reviewed values. expected_upfront_fee=%q vs fresh upfront_fee=%q; expected_availability_zone=%q vs fresh availability_zone=%q. Re-run the search, review the new offering (fee, AZ, dates), and update capacity_block_offering_id + expected_upfront_fee before applying again.",
+        "Purchase blocked: the fresh offering lookup no longer matches the reviewed values. expected_upfront_fee=%q vs fresh upfront_fee=%q; expected_availability_zone=%q vs fresh availability_zone=%q. Re-run the search, review the new offering (fee, AZ, dates), and update capacity_block_offering_id + expected_upfront_fee before applying again. If the purchase already succeeded, do NOT update the confirmation variables — set search_enabled = false instead (see docs/runbooks.md, runbook 1).",
         coalesce(var.expected_upfront_fee, "null"),
         coalesce(local.fresh_upfront_fee, "unknown"),
         coalesce(var.expected_availability_zone, "any"),
@@ -74,6 +83,6 @@ resource "aws_ec2_capacity_block_reservation" "this" {
 check "search_enabled_after_purchase" {
   assert {
     condition     = !(local.purchase_confirmed && var.search_enabled)
-    error_message = "A capacity block reservation is configured while search_enabled is still true. After the purchase completes, set search_enabled = false so future plans cannot be disturbed by drifted or empty offering lookups."
+    error_message = "A capacity block reservation is configured while search_enabled is still true. Set search_enabled = false AFTER the purchase apply has completed — never before, since turning it off skips fee verification for a purchase that has not happened yet. With search off, future plans cannot be disturbed by drifted or empty offering lookups."
   }
 }

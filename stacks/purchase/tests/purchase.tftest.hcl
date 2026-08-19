@@ -152,3 +152,33 @@ run "search_disabled_short_circuits" {
     error_message = "Reservation outputs must resolve to null, not error, when nothing is purchased."
   }
 }
+
+# Scenario 7 — locked steady state (runbook 1.4): search off WITH both
+# confirmation variables still set, exactly as tfvars look after the lock
+# step. The money gate must short-circuit to pass — the pinned values could
+# never match a fresh lookup (there is none), which is precisely the point:
+# an existing reservation must never be blocked by a disabled search. The
+# offering ID is the runbook's sentinel, documenting the locked shape. The
+# check block must NOT fire here (search_enabled is false), so no
+# expect_failures. This state is only safe against state that already holds
+# the reservation; against fresh state the sentinel makes AWS reject the
+# purchase (see main.tf's precondition comment).
+run "locked_stack_after_purchase_short_circuits" {
+  command = plan
+
+  variables {
+    search_enabled             = false
+    capacity_block_offering_id = "cbo-PURCHASED-see-state"
+    expected_upfront_fee       = "99999.99"
+  }
+
+  assert {
+    condition     = length(data.aws_ec2_capacity_block_offering.search) == 0
+    error_message = "search_enabled = false must gate off the offering lookup."
+  }
+
+  assert {
+    condition     = length(aws_ec2_capacity_block_reservation.this) == 1
+    error_message = "The locked steady state must still plan exactly one reservation: the money gate short-circuits when search is disabled."
+  }
+}
