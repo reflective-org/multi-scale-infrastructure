@@ -2,17 +2,17 @@
 # No run here ever touches a real AWS account.
 
 mock_provider "aws" {
-  # Baseline reservation: active, with exactly the default instance_count
-  # available, so runs that don't care about capacity neither trip the launch
-  # preconditions nor the under-subscription check. Runs that do care carry
-  # their own run-level override_data.
+  # Baseline reservation: active, with a total size (instance_count) exactly
+  # matching the default var.instance_count, so runs that don't care about
+  # capacity neither trip the launch preconditions nor the under-subscription
+  # check. Runs that do care carry their own run-level override_data.
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "active"
-      available_instance_count = 1
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "active"
+      instance_count    = 1
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -201,10 +201,10 @@ run "scheduled_block_fails_precondition" {
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "scheduled"
-      available_instance_count = 1
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "scheduled"
+      instance_count    = 1
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -225,10 +225,10 @@ run "pre_provisioning_before_block_start" {
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "scheduled"
-      available_instance_count = 1
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "scheduled"
+      instance_count    = 1
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -238,8 +238,10 @@ run "pre_provisioning_before_block_start" {
   }
 }
 
-# 12. instance_count above the reservation's available capacity → the
-#     capacity precondition fails (KTD9).
+# 12. instance_count above the block's total size → the capacity precondition
+#     fails (KTD9). The comparison is against the block's TOTAL instance_count,
+#     not available_instance_count — the remaining counter shrinks as our own
+#     instances launch and would wedge every post-launch plan.
 run "over_subscription_fails_precondition" {
   command = plan
 
@@ -250,10 +252,10 @@ run "over_subscription_fails_precondition" {
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "active"
-      available_instance_count = 2
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "active"
+      instance_count    = 2
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -262,19 +264,19 @@ run "over_subscription_fails_precondition" {
   ]
 }
 
-# 13. instance_count below available capacity → the under-subscription check
-#     warns about the already-paid-for idle capacity (R10). The test framework
-#     surfaces the check warning as an expected failure.
+# 13. instance_count below the block's total size → the under-subscription
+#     check warns about the already-paid-for idle capacity (R10). The test
+#     framework surfaces the check warning as an expected failure.
 run "under_subscription_warns" {
   command = plan
 
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "active"
-      available_instance_count = 2
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "active"
+      instance_count    = 2
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -322,7 +324,7 @@ run "explicit_ami_id_bypasses_ssm" {
   }
 }
 
-# 16. instance_count = 2 within available capacity → two instances sharing
+# 16. instance_count = 2 exactly filling the block → two instances sharing
 #     subnet, SG, and key pair.
 run "multi_instance_launch" {
   command = plan
@@ -334,10 +336,10 @@ run "multi_instance_launch" {
   override_data {
     target = data.aws_ec2_capacity_block_reservation.this
     values = {
-      availability_zone        = "us-east-1b"
-      state                    = "active"
-      available_instance_count = 2
-      instance_type            = "p5.48xlarge"
+      availability_zone = "us-east-1b"
+      state             = "active"
+      instance_count    = 2
+      instance_type     = "p5.48xlarge"
     }
   }
 
@@ -377,6 +379,12 @@ run "imdsv2_and_encrypted_root_volume" {
     error_message = "The root volume must be a gp3 of the default 100 GiB."
   }
 }
+
+# NOTE on the enable_fsx flip against RUNNING instances: aws_instance.gpu
+# carries lifecycle ignore_changes = [user_data] so that flipping enable_fsx
+# never stop/starts or replaces an existing instance (cloud-init would not
+# re-run anyway). Plan-only tests cannot model existing state, so that
+# contract is apply-time behavior verified manually — no test here asserts it.
 
 # 18. FSx disabled (the default) → zero FSx resources planned, and the
 #     rendered user_data carries no Lustre content at all (R7, AE4). The

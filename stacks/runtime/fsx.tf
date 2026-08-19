@@ -5,10 +5,11 @@
 #     Auto-export to S3 is asynchronous — verify the DRA export has caught up
 #     before flipping the flag (see docs/runbooks.md).
 #   - Enabling FSx after instances are already running does NOT mount /data on
-#     them: user_data runs once at first boot and
-#     user_data_replace_on_change = false (deliberate — see instance.tf).
-#     Mount manually per the runbook (the fsx_manual_mount_command output is
-#     the exact command), or launch FSx before the instances.
+#     them: user_data runs once at first boot and is ignored after creation
+#     (lifecycle ignore_changes, deliberate — see instance.tf), so the flip
+#     changes nothing on running instances. Mount manually per the runbook
+#     (the fsx_manual_mount_command output is the exact command), or launch
+#     FSx before the instances.
 #   - FSx bills continuously from creation — including before the capacity
 #     block starts, which is the point of pre-loading (KTD9) but is real spend.
 
@@ -90,6 +91,12 @@ locals {
     fi
 
     mkdir -p /data
+    # Immutable while unmounted: if the mount below fails, writes to the decoy
+    # root-volume directory fail with EPERM instead of quietly producing
+    # checkpoints that die with the root volume. Mounting Lustre OVER the
+    # immutable mountpoint still works. Skipped when /data is already a live
+    # mount (idempotent manual re-run), where chattr may not apply.
+    findmnt /data >/dev/null || chattr +i /data
 
     # _netdev is MANDATORY: without it the instance can hang at boot waiting
     # for Lustre before the network is up. x-systemd.automount re-mounts on
@@ -97,7 +104,23 @@ locals {
     fstab_line="${local.fsx_dns_name}@tcp:/${local.fsx_mount_name} /data lustre defaults,relatime,flock,_netdev,x-systemd.automount 0 0"
     grep -qxF "$fstab_line" /etc/fstab || echo "$fstab_line" >>/etc/fstab
 
-    mount -a
+    # mount -a alone is not the gate: under set -e its failure would abort
+    # before the diagnostics below could run. findmnt is the authoritative
+    # check that /data really is the Lustre file system.
+    mount -a || true
+
+    if findmnt -t lustre /data >/dev/null; then
+      # Clear any stale marker left by a previously failed attempt.
+      rm -f /etc/profile.d/00-fsx-broken.sh
+    else
+      # The instance stays SSH-healthy with /data as an empty immutable
+      # directory — leave a login-visible warning so nobody trusts the decoy.
+      # user_data runs as root: /etc/profile.d is writable directly, no sudo.
+      echo 'echo "WARNING: /data is NOT mounted - do not write checkpoints locally; see cloud-init logs (/var/log/cloud-init-output.log)"' >/etc/profile.d/00-fsx-broken.sh
+      chmod 0644 /etc/profile.d/00-fsx-broken.sh
+      echo "FATAL: /data is not a mounted Lustre file system after mount -a; see errors above" >&2
+      exit 1
+    fi
   EOT
 
   # The user_data seam declared in instance.tf, owned here from U5 on. Empty

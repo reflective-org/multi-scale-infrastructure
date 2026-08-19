@@ -1,6 +1,6 @@
 # GPU instances launched into the capacity block (R3, R4, R6 package half,
 # R10/KTD9). The reservation data source in main.tf supplies the instance
-# type, state, and available capacity — the operator is never asked twice.
+# type, state, and total size — the operator is never asked twice.
 
 locals {
   # Deep Learning Base OSS NVIDIA Driver AMI SSM paths (KTD3). The AL2023
@@ -77,14 +77,22 @@ resource "aws_instance" "gpu" {
   user_data = templatefile("${path.module}/templates/user_data.sh.tpl", {
     fsx_mount_snippet = local.fsx_mount_snippet
   })
-  # Deliberate: toggling FSx later must not silently stop/replace a running
-  # capacity-block instance mid-block. Mount manually instead — the runbook
-  # covers it (docs/runbooks.md).
+  # user_data is IGNORED after creation (lifecycle ignore_changes below):
+  # changing enable_fsx neither replaces nor stop/starts running instances,
+  # and does not mount /data on them — mount manually per runbook 7
+  # (docs/runbooks.md). A NEW instance created later (count increase or
+  # replacement) still renders the CURRENT configuration.
   user_data_replace_on_change = false
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-${count.index}" })
 
   lifecycle {
+    # Without this, a user_data diff (enable_fsx flipping local.fsx_mount_snippet)
+    # would apply as an in-place update that STOPS and STARTS every running
+    # instance — and cloud-init never re-runs, so /data still wouldn't mount.
+    # ignore_changes only affects updates: creates always render current config.
+    ignore_changes = [user_data]
+
     # KTD9: pre-activation provisioning is a feature — fail legibly instead
     # of letting AWS reject the launch with an opaque API error (AE5).
     precondition {
@@ -92,9 +100,13 @@ resource "aws_instance" "gpu" {
       error_message = "Capacity block ${var.capacity_reservation_id} is \"${data.aws_ec2_capacity_block_reservation.this.state}\", not \"active\" — instances can only launch after the block's start time. Wait for the start time, or set launch_instance = false to pre-provision networking and FSx now (see docs/runbooks.md)."
     }
 
+    # Compared against the block's TOTAL size, not available_instance_count:
+    # our own running instances decrement the available counter, which would
+    # wedge every post-launch plan. AWS itself rejects true launch-time
+    # capacity races.
     precondition {
-      condition     = var.instance_count <= data.aws_ec2_capacity_block_reservation.this.available_instance_count
-      error_message = "instance_count (${var.instance_count}) exceeds the ${data.aws_ec2_capacity_block_reservation.this.available_instance_count} instance(s) still available on capacity block ${var.capacity_reservation_id}."
+      condition     = var.instance_count <= data.aws_ec2_capacity_block_reservation.this.instance_count
+      error_message = "instance_count (${var.instance_count}) exceeds the total size of capacity block ${var.capacity_reservation_id} (${data.aws_ec2_capacity_block_reservation.this.instance_count} instance(s))."
     }
   }
 }
@@ -103,8 +115,10 @@ resource "aws_instance" "gpu" {
 # whether or not every reserved instance is launched (R10). Warn, don't
 # block — partial use can be deliberate.
 check "capacity_block_under_subscribed" {
+  # Total size again (same rationale as the launch precondition): comparing
+  # against the remaining counter would misfire once our instances run.
   assert {
-    condition     = !var.launch_instance || var.instance_count >= data.aws_ec2_capacity_block_reservation.this.available_instance_count
-    error_message = "instance_count (${var.instance_count}) is below the ${data.aws_ec2_capacity_block_reservation.this.available_instance_count} instance(s) available on capacity block ${var.capacity_reservation_id} — the unused capacity is already paid for and cannot be refunded."
+    condition     = !var.launch_instance || var.instance_count >= data.aws_ec2_capacity_block_reservation.this.instance_count
+    error_message = "instance_count (${var.instance_count}) is below the ${data.aws_ec2_capacity_block_reservation.this.instance_count} instance(s) capacity block ${var.capacity_reservation_id} holds — the unused capacity is already paid for and cannot be refunded."
   }
 }

@@ -132,7 +132,7 @@ While the block is still `scheduled`, an apply with `launch_instance = true` fai
 
 Set `launch_instance = true` (and `instance_count`) and apply. Two capacity rules are enforced:
 
-- `instance_count` **must not exceed** the reservation's available capacity — a precondition blocks the plan if it does.
+- `instance_count` **must not exceed** the block's total size — a precondition blocks the plan if it does. (The total, not the remaining capacity: your own running instances shrink the remaining counter, and comparing against it would fail every plan after a full launch. A true launch-time capacity race is rejected by AWS itself.)
 - **Under-subscription only warns** (the `capacity_block_under_subscribed` check): launching fewer instances than the block holds is legal and sometimes deliberate, but the unused capacity is already paid for and cannot be refunded. Read the warning; make it a decision, not an accident.
 
 The instance type is taken from the reservation itself — you are never asked for it twice.
@@ -146,6 +146,14 @@ aws ec2-instance-connect ssh --instance-id i-... --os-user ec2-user
 ```
 
 The CLI path connects **from your own IP**, which must be in `admin_cidr_blocks` (see [docs/admin-access.md](admin-access.md) — set it before applying). The **browser-console** EC2 Instance Connect path needs nothing: the AWS service ranges are always admitted.
+
+If FSx is enabled, verify `/data` really is the Lustre mount **before writing anything to it**:
+
+```bash
+findmnt /data    # expect FSTYPE lustre, source <fs-id>@tcp:/<mount_name>
+```
+
+If it is missing, first-boot mounting failed: `user_data` leaves a marker at `/etc/profile.d/00-fsx-broken.sh` that prints a loud warning on every login, and `/data` is left **immutable** (`chattr +i`) so stray checkpoint writes fail with `EPERM` instead of quietly landing on the root volume. Check `/var/log/cloud-init-output.log` for the install/mount error, fix it, and re-run the mount (runbook 7.2 has the manual commands) — a successful re-run of the fragment clears the marker.
 
 ---
 
@@ -243,7 +251,7 @@ Flipping `enable_fsx = false` on a live deployment plans the destruction of the 
 
 ### 7.2 Enabling FSx after instances are running does NOT mount it
 
-`user_data` runs once at first boot, and `user_data_replace_on_change = false` is deliberate — toggling FSx must never silently stop or replace a running capacity-block instance mid-block. So enabling FSx later creates the file system but leaves `/data` unmounted on the existing instances. Mount manually on each one:
+`user_data` runs once at first boot, and the instances **ignore `user_data` changes after creation** (lifecycle `ignore_changes`, deliberate: without it, the changed `user_data` would apply as an in-place update that stops and starts every running capacity-block instance mid-block — without ever re-running cloud-init). So enabling FSx later changes **nothing** on the running instances: no stop/start, no replacement, and `/data` stays unmounted on them. Only an instance created *after* the flip (an `instance_count` increase or a replacement) renders the current configuration and mounts `/data` at first boot. On the existing instances, mount manually on each one:
 
 ```bash
 # 1. Install the Lustre client for the OS generation:
