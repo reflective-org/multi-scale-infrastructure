@@ -69,7 +69,8 @@ cannot be resource-scoped, so it stays on `*`.
       "Resource": "arn:aws:ec2:us-east-1:123456789012:instance/*",
       "Condition": {
         "StringEquals": {
-          "ec2:osuser": "ec2-user"
+          "ec2:osuser": "ec2-user",
+          "aws:ResourceTag/Project": "multi-scale"
         }
       }
     },
@@ -82,6 +83,11 @@ cannot be resource-scoped, so it stays on `*`.
   ]
 }
 ```
+
+The `aws:ResourceTag/Project` condition scopes the grant to instances tagged
+`Project = multi-scale` (see `local.tags` in `stacks/runtime/main.tf`);
+operators who override the default `tags` variable with a different `Project`
+value must update this condition to match.
 
 ## Notes
 

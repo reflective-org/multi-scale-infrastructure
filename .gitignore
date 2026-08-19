@@ -32,6 +32,11 @@ override.tf.json
 id_ed25519*
 id_rsa*
 
+# scripts/generate-key.sh's default keypair basename (kept together so the
+# .pub half doesn't linger unignored even though it's harmless on its own).
+multi-scale-gpu
+multi-scale-gpu.pub
+
 # Include override files you do wish to add to version control using negated pattern
 # !example_override.tf
 
