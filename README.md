@@ -16,7 +16,7 @@ Operational documentation:
 | Apply | Creates | Spends |
 |---|---|---|
 | **purchase** stack, search only (confirmation variables unset) | Nothing — a data-source lookup with review outputs | Free |
-| **purchase** stack with `capacity_block_offering_id` + `expected_upfront_fee` set | The capacity block reservation | The **full upfront fee, immediately, non-refundable** — typically five figures |
+| **purchase** stack with `capacity_block_offering_id` + `expected_upfront_fee` set | The capacity block reservation | The **full upfront fee, immediately, non-refundable** — typically four to five figures |
 | **runtime** stack with `launch_instance = false` | VPC, public subnet, IGW, security group, key pair; FSx for Lustre + S3 link if `enable_fsx = true` | VPC pieces are effectively free; **FSx bills hourly from creation**, block active or not |
 | **runtime** stack with `launch_instance = true` | The GPU instance(s) in the block | Block compute is already paid; adds the gp3 root EBS volume(s) and data transfer |
 
