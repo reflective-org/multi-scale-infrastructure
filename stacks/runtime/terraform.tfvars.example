@@ -1,0 +1,91 @@
+# Copy to terraform.tfvars (gitignored) and edit.
+# Variables are defined in variables.tf; see README and docs/runbooks.md
+# for the full launch workflow before applying anything.
+
+region = "us-east-1"
+
+# --- Capacity reservation (required) ------------------------------------
+# The capacity block to launch into: the purchase stack's reservation_id
+# output, or a previously purchased block. Everything (subnet AZ included)
+# is derived from this reservation.
+# capacity_reservation_id = "cr-0123456789abcdef0"
+
+# --- Networking ----------------------------------------------------------
+# CIDR for the stack's self-contained VPC. Default is fine unless it
+# collides with networks you plan to peer with.
+# vpc_cidr = "10.0.0.0/16"
+
+# --- Admin SSH access (see docs/admin-access.md) -------------------------
+# CLI-initiated `aws ec2-instance-connect ssh` and plain ssh connect from
+# YOUR IP, so list it here (`curl -s ifconfig.me`, then /32). The browser
+# console's EC2 Instance Connect needs no entry — the AWS service ranges
+# are always admitted. 0.0.0.0/0 and ::/0 are rejected by validation.
+# admin_cidr_blocks = ["203.0.113.7/32"]
+
+# --- Key pair (set exactly one of the two) --------------------------------
+# Option A: register a new key pair from a local public key. Generate one
+# with scripts/generate-key.sh — it prints this exact line. Only the public
+# key is registered; the private key never leaves your machine.
+# public_key = "ssh-ed25519 AAAA... you@host"
+#
+# Option B: reuse a key pair that already exists in this region.
+# existing_key_pair_name = "my-existing-key"
+#
+# Name used when registering public_key (ignored for option B):
+# key_pair_name = "multi-scale-gpu"
+
+# --- Instances -------------------------------------------------------------
+# Instances launch only while the capacity block is "active". Before the
+# block's start time, set launch_instance = false to pre-provision networking
+# (and later FSx) so training data can be staged before the clock starts;
+# flip it back to true once the block is active.
+# launch_instance = true
+#
+# How many instances to launch into the block (1-64, and at most the
+# reservation's available capacity). Under-subscribing a block wastes
+# already-paid-for capacity — a plan-time warning will say so.
+# instance_count = 1
+#
+# AMI generation. "al2" (default, per R4) is the AL2 Deep Learning Base OSS
+# NVIDIA Driver AMI — FROZEN since June 2026 (AL2 end of life), so it gets
+# no security patches. "al2023" is the patched alternative.
+# ami_flavor = "al2"
+#
+# Or pin an exact AMI and bypass SSM resolution (and ami_flavor) entirely:
+# ami_id = "ami-0123456789abcdef0"
+#
+# Root gp3 volume size in GiB (minimum 100 — the DLAMI needs headroom). The
+# root volume dies with the instance when the block ends; only /data survives.
+# root_volume_size_gib = 100
+
+# --- FSx for Lustre at /data (optional) -------------------------------------
+# An S3-linked PERSISTENT_2 file system mounted at /data on every instance.
+# FSx bills continuously from the moment it is created (block active or not).
+#
+# TOGGLE WARNINGS:
+#   - Disabling enable_fsx on a live deployment DESTROYS the file system.
+#     Auto-export to S3 is asynchronous — verify the export has caught up
+#     before disabling (docs/runbooks.md).
+#   - Enabling FSx after instances are already running does NOT mount /data
+#     on them (user_data runs once). Mount manually with the
+#     fsx_manual_mount_command output, or launch FSx before the instances.
+# enable_fsx = false
+#
+# Bare bucket name (no s3:// prefix, no path). The bucket must be in the
+# same region as the capacity block — a wrong-region bucket fails at DRA
+# creation, after FSx has already started billing.
+# fsx_s3_bucket = "my-training-data"
+#
+# Storage capacity in GiB: exactly 1200, or a positive multiple of 2400.
+# fsx_storage_capacity_gib = 1200
+#
+# Throughput per TiB of storage: 125, 250, 500, or 1000 MB/s.
+# fsx_per_unit_throughput = 250
+#
+# Auto-export /data changes back to the bucket. Set false to keep a
+# read-only training bucket pristine (import-only).
+# fsx_auto_export = true
+
+# --- Tags ------------------------------------------------------------------
+# Extra tags merged onto every resource.
+# tags = { Owner = "you" }
