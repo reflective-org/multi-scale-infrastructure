@@ -2,7 +2,7 @@
 # Variables are defined in variables.tf; see README and docs/runbooks.md
 # for the full launch workflow before applying anything.
 
-region = "us-east-1"
+region = "us-east-2"
 
 # --- Capacity reservation (required) ------------------------------------
 # The capacity block to launch into: the purchase stack's reservation_id

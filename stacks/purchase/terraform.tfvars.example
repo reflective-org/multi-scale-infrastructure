@@ -9,7 +9,7 @@
 # Search inputs (free — searching creates nothing and costs nothing)
 # ---------------------------------------------------------------------------
 
-region = "us-east-1"
+region = "us-east-2"
 
 # Exactly one of: "p5.48xlarge" | "p5en.48xlarge".
 #
