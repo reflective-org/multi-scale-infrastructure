@@ -37,6 +37,34 @@ region = "us-east-2"
 # ignored for option B):
 # key_pair_name = "multi-scale-fleet"
 
+# --- Workload image (REQUIRED) --------------------------------------------
+# Container image every node runs. A private-ECR URI is detected by its
+# shape (<account>.dkr.ecr.<region>.amazonaws.com/...): the instances get
+# automatic ECR login at boot plus a pull policy scoped to exactly that
+# repository, with the registry region taken from the URI itself — so a
+# us-west-2 image works from a us-east-2 fleet. Any other registry
+# (ghcr.io, public.ecr.aws, docker.io, ...) gets no ECR grant. Digest-pin
+# (@sha256:...) so a partial replacement never runs a mixed-version fleet
+# — see docs/runbooks.md.
+# docker_image = "123456789012.dkr.ecr.us-east-2.amazonaws.com/train@sha256:<digest>"
+# docker_image = "ghcr.io/org/train:v3"
+
+# --- S3 data plane (bucket REQUIRED) ---------------------------------------
+# Bare name of the bucket the containers use (not an s3:// URI; the bucket
+# is yours, not managed by this stack). The instance role reads the whole
+# bucket but writes ONLY under s3_output_prefix.
+# s3_bucket = "my-training-data"
+#
+# Key prefix the containers may write under. Keep input data OUTSIDE this
+# prefix — every fleet node can write (and overwrite) objects under it. No
+# leading/trailing slash; nesting is fine ("runs/2026-09").
+# s3_output_prefix = "outputs"
+
+# --- Container logs --------------------------------------------------------
+# Ship container stdout/stderr to CloudWatch Logs (awslogs driver). On by
+# default; disabling also removes the role's logs: grant.
+# enable_container_logs = true
+
 # --- Tags ------------------------------------------------------------------
 # Extra tags merged onto every resource.
 # tags = { Owner = "you" }

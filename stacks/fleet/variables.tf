@@ -82,3 +82,47 @@ variable "key_pair_name" {
   type        = string
   default     = "multi-scale-fleet"
 }
+
+# ---------------------------------------------------------------------------
+# Workload: image and data plane
+# ---------------------------------------------------------------------------
+
+variable "docker_image" {
+  description = "Container image every node runs. A private-ECR URI (matching <account>.dkr.ecr.<region>.amazonaws.com/...) is detected by shape (KTD7): it gets automatic ECR login at boot and a pull policy scoped to exactly that repository, with the registry region parsed from the URI itself — not from var.region, so cross-region pulls work. Any other registry (ghcr.io, public.ecr.aws, docker.io, ...) gets no ECR grant. Digest-pinned URIs (...@sha256:<digest>) are recommended so partial replacements never run a version-heterogeneous fleet — see docs/runbooks.md."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.docker_image)) > 0
+    error_message = "docker_image is required: name the image the fleet runs (a private ECR URI or any public registry reference, e.g. \"ghcr.io/org/train:v3\")."
+  }
+}
+
+variable "s3_bucket" {
+  description = "Bare name of the operator-supplied S3 bucket the containers use (e.g. \"my-training-data\" — not an s3:// URI). The instance role may read the whole bucket but write only under s3_output_prefix. The bucket itself is not managed by this stack."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^/:]+$", var.s3_bucket))
+    error_message = "s3_bucket must be a bare bucket name (e.g. \"my-training-data\"), not an s3:// URI or a path — the stack builds the ARNs itself."
+  }
+}
+
+variable "s3_output_prefix" {
+  description = "Key prefix under s3_bucket where the containers may write: PutObject and the multipart-upload actions are granted ONLY under <s3_bucket>/<s3_output_prefix>/*. Input data must live OUTSIDE this prefix — every fleet node can write (and overwrite) objects under it, so inputs stored here lose their read-only guarantee. No leading or trailing slash; nested prefixes like \"runs/2026-09\" are fine."
+  type        = string
+  default     = "outputs"
+
+  # The write ARN is built as <bucket>/<prefix>/*: a leading slash or empty
+  # prefix would silently widen (or break) the grant, a trailing slash would
+  # double the separator — reject all three at the variable boundary.
+  validation {
+    condition     = length(var.s3_output_prefix) > 0 && !startswith(var.s3_output_prefix, "/") && !endswith(var.s3_output_prefix, "/")
+    error_message = "s3_output_prefix must be a non-empty key prefix without leading or trailing slashes (e.g. \"outputs\" or \"runs/2026-09\") — the stack adds the slashes when it builds the policy ARN."
+  }
+}
+
+variable "enable_container_logs" {
+  description = "Ship container stdout/stderr to CloudWatch Logs via Docker's awslogs driver (R8, default on). Grants the instance role the three logs: write actions scoped to the fleet log group; disabling removes that grant (and, in the boot script, the awslogs flags)."
+  type        = bool
+  default     = true
+}
