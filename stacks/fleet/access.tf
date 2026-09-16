@@ -17,7 +17,8 @@ resource "aws_key_pair" "this" {
   tags = local.tags
 }
 
-# The runtime stack derives an effective key-pair-name local here; the fleet
-# adds it with the instance unit (its only consumer) so no declaration sits
-# unused in the meantime:
-#   key_pair_name = coalesce(var.existing_key_pair_name, one(aws_key_pair.this[*].key_name))
+locals {
+  # Effective key pair name, consumed by the instance unit (house pattern —
+  # same derivation as the runtime stack's access.tf).
+  key_pair_name = coalesce(var.existing_key_pair_name, one(aws_key_pair.this[*].key_name))
+}
