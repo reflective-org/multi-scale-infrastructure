@@ -101,9 +101,13 @@ variable "s3_bucket" {
   description = "Bare name of the operator-supplied S3 bucket the containers use (e.g. \"my-training-data\" — not an s3:// URI). The instance role may read the whole bucket but write only under s3_output_prefix. The bucket itself is not managed by this stack."
   type        = string
 
+  # Real S3 bucket-name charset, not just "no slash/colon": the name is
+  # spliced into the IAM Resource ARN, where "*" and "?" act as wildcards
+  # that match across "/" and would silently widen the grant. The charset
+  # also still rejects s3:// URIs and paths.
   validation {
-    condition     = can(regex("^[^/:]+$", var.s3_bucket))
-    error_message = "s3_bucket must be a bare bucket name (e.g. \"my-training-data\"), not an s3:// URI or a path — the stack builds the ARNs itself."
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.s3_bucket))
+    error_message = "s3_bucket must be a bare, valid bucket name (lowercase letters, digits, dots, hyphens — e.g. \"my-training-data\"), not an s3:// URI or a path — the stack builds the ARNs itself, and characters like \"*\" or \"?\" would act as IAM wildcards."
   }
 }
 
@@ -118,6 +122,14 @@ variable "s3_output_prefix" {
   validation {
     condition     = length(var.s3_output_prefix) > 0 && !startswith(var.s3_output_prefix, "/") && !endswith(var.s3_output_prefix, "/")
     error_message = "s3_output_prefix must be a non-empty key prefix without leading or trailing slashes (e.g. \"outputs\" or \"runs/2026-09\") — the stack adds the slashes when it builds the policy ARN."
+  }
+
+  # The prefix is spliced into the IAM Resource ARN, where "*" and "?" are
+  # wildcards that match across "/" — a prefix containing them would silently
+  # widen the write grant far beyond the intended keyspace.
+  validation {
+    condition     = !strcontains(var.s3_output_prefix, "*") && !strcontains(var.s3_output_prefix, "?")
+    error_message = "s3_output_prefix must not contain \"*\" or \"?\" — they act as IAM wildcards in the policy ARN and would silently widen the write grant."
   }
 }
 
@@ -199,7 +211,7 @@ variable "container_run_args" {
 }
 
 variable "restart_policy" {
-  description = "Docker restart policy for the container. \"on-failure\" (default) renders --restart on-failure:<restart_max_retries>: bounded retries on nonzero exit, and a shard that exited 0 is NEVER re-run (R5). \"none\" disables restarts. \"unless-stopped\" restarts unconditionally — including RE-RUNNING A COMPLETED SHARD after a reboot, so batch operators should not pick it. restart_max_retries applies only to \"on-failure\"."
+  description = "Docker restart policy for the container. \"on-failure\" (default) renders --restart on-failure:<restart_max_retries>: bounded retries on nonzero exit, and a shard that exited 0 is NEVER re-run (R5). \"none\" disables restarts (rendered as docker's spelling, --restart no). \"unless-stopped\" restarts unconditionally — including RE-RUNNING A COMPLETED SHARD after a reboot, so batch operators should not pick it. restart_max_retries applies only to \"on-failure\"."
   type        = string
   default     = "on-failure"
 
@@ -221,7 +233,7 @@ variable "restart_max_retries" {
 }
 
 variable "enable_container_logs" {
-  description = "Ship container stdout/stderr to CloudWatch Logs via Docker's awslogs driver (R8, default on). Grants the instance role the three logs: write actions scoped to the fleet log group; disabling removes that grant (and, in the boot script, the awslogs flags)."
+  description = "Ship container stdout/stderr to CloudWatch Logs via Docker's awslogs driver (R8, default on). Creates the Terraform-managed fleet log group and grants the instance role the two logs: write actions scoped to it; disabling removes the group, the grant, and (in the boot script) the awslogs flags."
   type        = bool
   default     = true
 }

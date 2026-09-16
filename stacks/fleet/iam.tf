@@ -10,7 +10,7 @@
 #     derived from the image URI — and only when the URI is private ECR.
 #   - s3:ListBucket on the bucket, s3:GetObject bucket-wide.
 #   - s3:PutObject / multipart actions ONLY under <bucket>/<output_prefix>/*.
-#   - the three logs: write actions on the fleet log group, only while
+#   - the two logs: write actions on the fleet log group, only while
 #     enable_container_logs is true (R8).
 #
 # Policies are standalone aws_iam_role_policy resources: the embedded

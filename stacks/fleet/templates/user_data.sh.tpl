@@ -4,7 +4,9 @@
 # Keep every step idempotent: a manual re-run after debugging must be safe —
 # the docker rm -f guard and the stale-marker cleanup below are part of that
 # contract (KTD3).
-set -euo pipefail
+# -E so the ERR trap installed below fires inside function bodies and
+# compound commands too.
+set -Eeuo pipefail
 
 # --- loud-failure contract (R7, KTD8) ----------------------------------------
 # Mirrors stacks/runtime/fsx.tf's mount fragment: any boot/pull/run failure
@@ -19,11 +21,20 @@ set -euo pipefail
 marker=/etc/profile.d/00-fleet-broken.sh
 
 fail() {
+  # Drop the catch-all ERR trap first: a failure inside fail() itself (or the
+  # trap invoking fail) must not recurse back into it.
+  trap - ERR
   echo 'echo "WARNING: the fleet container is NOT running on this node - shard ${node_index}/${node_count} is doing no work; see cloud-init logs (/var/log/cloud-init-output.log)"' >"$marker"
   chmod 0644 "$marker"
   echo "FATAL: $1" >&2
   exit 1
 }
+
+# Catch-all leg of the loud-failure contract: any step NOT already guarded by
+# an explicit `|| fail "..."` (those give specific messages and suppress this
+# trap for their command) still routes through fail() instead of exiting
+# silently under set -e.
+trap 'fail "unexpected boot failure - see /var/log/cloud-init-output.log"' ERR
 
 # --- EC2 Instance Connect (insurance install) --------------------------------
 # It is unverified whether the Deep Learning AMIs bundle ec2-instance-connect,

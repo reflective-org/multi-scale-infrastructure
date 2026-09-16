@@ -73,7 +73,9 @@ region = "us-east-2"
 # instance_count = 1
 #
 # Pin an exact AMI instead of the SSM-resolved AL2023 Base GPU Deep
-# Learning AMI; setting this bypasses SSM resolution entirely.
+# Learning AMI; setting this bypasses SSM resolution entirely. Pin it for
+# the duration of a batch: an AWS-side DLAMI release moves the SSM pointer,
+# and the next apply would replace the whole fleet (docs/runbooks.md, 10.1).
 # ami_id = "ami-0123456789abcdef0"
 #
 # Root gp3 volume size in GiB (encrypted; minimum 100 — the Deep Learning

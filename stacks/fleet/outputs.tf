@@ -27,3 +27,8 @@ output "container_log_group" {
   description = "CloudWatch log group the containers write to (one stream per node index). Null while enable_container_logs = false."
   value       = var.enable_container_logs ? local.log_group_name : null
 }
+
+output "resolved_ami_id" {
+  description = "The AMI the fleet is (or would be) launched from. Copy into ami_id to pin it for the duration of a batch — the SSM `latest` pointer moving is otherwise a full-fleet replacement trigger (docs/runbooks.md, 10.1)."
+  value       = local.ami_id
+}

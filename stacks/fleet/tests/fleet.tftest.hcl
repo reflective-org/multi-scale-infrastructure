@@ -430,6 +430,11 @@ run "logs_grant_present_and_group_scoped_by_default" {
     ])
     error_message = "The logs grant must be scoped to the fleet log group's ARN pair, never *."
   }
+
+  assert {
+    condition     = output.container_log_group == "/multi-scale-fleet/containers"
+    error_message = "With logs enabled the container_log_group output must name the fleet log group."
+  }
 }
 
 # 21. Logs off → the logs policy (and with it every logs: action on the role)
@@ -454,6 +459,11 @@ run "logs_disabled_removes_logs_grant" {
   assert {
     condition     = !strcontains(aws_iam_role_policy.s3_data.policy, "logs:")
     error_message = "No logs: action may hide in the S3 policy when logs are disabled."
+  }
+
+  assert {
+    condition     = output.container_log_group == null
+    error_message = "With logs disabled the container_log_group output must be null, not a dangling group name."
   }
 }
 
@@ -583,6 +593,13 @@ run "four_instances_planned_with_two_subnets" {
   assert {
     condition     = alltrue([for i, inst in aws_instance.fleet : inst.tags["Name"] == "multi-scale-fleet-${i}"])
     error_message = "Every instance must be tagged Name = <prefix>-<index>."
+  }
+
+  # Output shape: the per-node maps carry one entry per instance (values are
+  # unknown at plan under the mock, so assert on length, not contents).
+  assert {
+    condition     = length(output.instance_ids) == 4 && length(output.connect_commands_eic) == 4
+    error_message = "instance_ids and connect_commands_eic must carry one entry per planned node."
   }
 }
 
@@ -840,7 +857,9 @@ run "restart_unless_stopped_renders_bare" {
   }
 }
 
-# 42. none renders bare.
+# 42. none renders docker's spelling of "never restart": bare --restart no
+#     ("none" is not a valid docker restart policy and would fail docker run
+#     at boot).
 run "restart_none_renders_bare" {
   command = plan
 
@@ -849,8 +868,8 @@ run "restart_none_renders_bare" {
   }
 
   assert {
-    condition     = can(regex("\n  --restart none \\\\\n", aws_instance.fleet[0].user_data))
-    error_message = "restart_policy = none must render bare --restart none."
+    condition     = can(regex("\n  --restart no \\\\\n", aws_instance.fleet[0].user_data))
+    error_message = "restart_policy = none must render bare --restart no (docker's spelling)."
   }
 }
 
@@ -1015,4 +1034,44 @@ run "reserved_env_key_rejected" {
   }
 
   expect_failures = [var.container_env]
+}
+
+# 51. "*" in the output prefix is rejected at the variable boundary: the
+#     prefix is spliced into the IAM Resource ARN, where "*" and "?" are
+#     wildcards matching across "/" — the write grant would silently widen.
+run "output_prefix_wildcard_rejected" {
+  command = plan
+
+  variables {
+    s3_output_prefix = "outputs/*"
+  }
+
+  expect_failures = [var.s3_output_prefix]
+}
+
+# 52. Same for the bucket name: the real bucket-name charset admits no "*"
+#     or "?", so a wildcard-bearing name never reaches the ARN splice.
+run "wildcard_bucket_name_rejected" {
+  command = plan
+
+  variables {
+    s3_bucket = "bad*name"
+  }
+
+  expect_failures = [var.s3_bucket]
+}
+
+# 53. Happy-path guard on the tightened charset: a normal dotted bucket name
+#     still passes and lands verbatim in the S3 policy ARNs.
+run "dotted_bucket_name_accepted" {
+  command = plan
+
+  variables {
+    s3_bucket = "my.training-data"
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.s3_data.policy).Statement[0].Resource == "arn:aws:s3:::my.training-data"
+    error_message = "A valid dotted bucket name must pass validation and reach the ListBucket ARN verbatim."
+  }
 }

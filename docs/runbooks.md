@@ -373,6 +373,8 @@ A node whose boot failed prints a loud warning on every login (the `/etc/profile
 
 There is deliberately no `create_before_destroy`: an overlap would run two live nodes with the same `NODE_INDEX`, double-processing (and double-writing) that shard.
 
+One replacement trigger is **not** operator-initiated: with `ami_id` unset, every plan re-resolves the SSM `latest` DLAMI pointer, so an AWS-side AMI release turns your next apply — however unrelated — into a full-fleet replacement. During a batch, pin the current AMI into `ami_id` (`tofu output -raw resolved_ami_id` prints it ready to copy), and unpin between batches. Do **not** work around it with `ignore_changes` on `ami` — that reintroduces the silent-no-op class this stack deliberately rejects.
+
 ### 10.2 Digest-pin the image
 
 Use `@sha256:...` URIs, not mutable tags:

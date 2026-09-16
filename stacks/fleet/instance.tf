@@ -27,8 +27,9 @@ locals {
 
   # --restart spec (R5): bounded retries for on-failure; the other two
   # policies take no retry count (restart_max_retries is ignored for them —
-  # said on both variables).
-  restart_spec = var.restart_policy == "on-failure" ? "on-failure:${var.restart_max_retries}" : var.restart_policy
+  # said on both variables). Docker's spelling of "never restart" is `no`,
+  # so the operator-facing "none" maps to it here.
+  restart_spec = var.restart_policy == "on-failure" ? "on-failure:${var.restart_max_retries}" : (var.restart_policy == "none" ? "no" : var.restart_policy)
 }
 
 resource "aws_instance" "fleet" {
