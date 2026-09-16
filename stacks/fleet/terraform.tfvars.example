@@ -1,0 +1,120 @@
+# Copy to terraform.tfvars (gitignored) and edit.
+# Variables are defined in variables.tf; see README and docs/runbooks.md
+# for the full fleet workflow before applying anything.
+
+region = "us-east-2"
+
+# --- Networking ----------------------------------------------------------
+# CIDR for the stack's self-contained VPC. Default is fine unless it
+# collides with networks you plan to peer with.
+# vpc_cidr = "10.0.0.0/16"
+#
+# Availability zone suffixes (appended to region); one public subnet per
+# entry, and instances spread across them round-robin. Steer this list when
+# an AZ has no g6e capacity — check offerings first (docs/runbooks.md):
+#   aws ec2 describe-instance-type-offerings --location-type availability-zone
+# subnet_azs = ["a", "b"]
+
+# --- Admin SSH access (see docs/admin-access.md) -------------------------
+# CLI-initiated `aws ec2-instance-connect ssh` and plain ssh connect from
+# YOUR IP, so list it here (`curl -s ifconfig.me`, then /32). The browser
+# console's EC2 Instance Connect needs no entry — the AWS service ranges
+# are always admitted. IPv4 only; 0.0.0.0/0 and ::/0 are rejected by
+# validation.
+# admin_cidr_blocks = ["203.0.113.7/32"]
+
+# --- Key pair (set exactly one of the two) --------------------------------
+# Option A: register a new key pair from a local public key. Generate one
+# with scripts/generate-key.sh — it prints this exact line. Only the public
+# key is registered; the private key never leaves your machine.
+# public_key = "ssh-ed25519 AAAA... you@host"
+#
+# Option B: reuse a key pair that already exists in this region.
+# existing_key_pair_name = "my-existing-key"
+#
+# Name PREFIX used when registering public_key (a random suffix is appended
+# so nothing collides with a p5 runtime deployment in the same region;
+# ignored for option B):
+# key_pair_name = "multi-scale-fleet"
+
+# --- Workload image (REQUIRED) --------------------------------------------
+# Container image every node runs. A private-ECR URI is detected by its
+# shape (<account>.dkr.ecr.<region>.amazonaws.com/...): the instances get
+# automatic ECR login at boot plus a pull policy scoped to exactly that
+# repository, with the registry region taken from the URI itself — so a
+# us-west-2 image works from a us-east-2 fleet. Any other registry
+# (ghcr.io, public.ecr.aws, docker.io, ...) gets no ECR grant. Digest-pin
+# (@sha256:...) so a partial replacement never runs a mixed-version fleet
+# — see docs/runbooks.md.
+# docker_image = "123456789012.dkr.ecr.us-east-2.amazonaws.com/train@sha256:<digest>"
+# docker_image = "ghcr.io/org/train:v3"
+
+# --- S3 data plane (bucket REQUIRED) ---------------------------------------
+# Bare name of the bucket the containers use (not an s3:// URI; the bucket
+# is yours, not managed by this stack). The instance role reads the whole
+# bucket but writes ONLY under s3_output_prefix.
+# s3_bucket = "my-training-data"
+#
+# Key prefix the containers may write under. Keep input data OUTSIDE this
+# prefix — every fleet node can write (and overwrite) objects under it. No
+# leading/trailing slash; nesting is fine ("runs/2026-09").
+# s3_output_prefix = "outputs"
+
+# --- Instances --------------------------------------------------------------
+# On-demand GPU instance type every node uses. Check the type's per-AZ
+# offerings (and your vCPU quota) before changing — see docs/runbooks.md:
+# instance_type = "g6e.xlarge"
+#
+# Number of fleet nodes (X). Each node runs one container with NODE_INDEX
+# in [0, X) and NODE_COUNT = X. 0 is valid and is the PAUSE mechanism:
+# zero instances, while networking, role, and key pair persist at near-zero
+# cost. Whole number, at most 64. Changing this REPLACES every instance —
+# the shard math is baked into user_data (docs/runbooks.md).
+# instance_count = 1
+#
+# Pin an exact AMI instead of the SSM-resolved AL2023 Base GPU Deep
+# Learning AMI; setting this bypasses SSM resolution entirely. Pin it for
+# the duration of a batch: an AWS-side DLAMI release moves the SSM pointer,
+# and the next apply would replace the whole fleet (docs/runbooks.md, 10.1).
+# ami_id = "ami-0123456789abcdef0"
+#
+# Root gp3 volume size in GiB (encrypted; minimum 100 — the Deep Learning
+# AMI plus a pulled image need the headroom).
+# root_volume_size_gib = 100
+
+# --- Container runtime -------------------------------------------------------
+# Operator env vars injected into the container alongside NODE_INDEX and
+# NODE_COUNT. NEVER put secrets here: every value lands in plaintext
+# OpenTofu state AND in DescribeInstanceAttribute output — fetch secrets at
+# runtime inside the container instead (the instance role is the
+# credential). Values must not contain newlines; NODE_INDEX and NODE_COUNT
+# are reserved. Changing any entry replaces every instance.
+# container_env = { BATCH_SIZE = "32", OUTPUT_PREFIX = "runs/2026-09" }
+#
+# Extra docker run arguments, appended verbatim before the image reference
+# and word-split by the shell — no quoting is applied, so no spaces inside
+# values, and never secrets. Canonical use: shared memory for PyTorch
+# dataloaders.
+# container_run_args = "--shm-size=8g"
+#
+# Docker restart policy. "on-failure" (default) retries a nonzero exit up
+# to restart_max_retries times and NEVER re-runs a shard that exited 0;
+# "none" disables restarts; "unless-stopped" restarts unconditionally —
+# including RE-RUNNING A COMPLETED SHARD after a reboot, so batch
+# operators should not pick it.
+# restart_policy = "on-failure"
+#
+# Retry bound for restart_policy = "on-failure" only; ignored for "none"
+# and "unless-stopped".
+# restart_max_retries = 3
+
+# --- Container logs --------------------------------------------------------
+# Ship container stdout/stderr to CloudWatch Logs (awslogs driver). On by
+# default; disabling also removes the role's logs: grant. The log group is
+# Terraform-managed: tofu destroy DELETES it and every log in it — export
+# anything you need first (docs/runbooks.md).
+# enable_container_logs = true
+
+# --- Tags ------------------------------------------------------------------
+# Extra tags merged onto every resource.
+# tags = { Owner = "you" }

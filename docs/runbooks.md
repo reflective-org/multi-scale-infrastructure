@@ -1,6 +1,8 @@
 # Operational runbooks
 
-The procedures that spend money or destroy data, in the order you will meet them. Every step here names the actual variables, outputs, and error messages of the two stacks — if the code and this document ever disagree, the code wins and this file has a bug.
+The procedures that spend money or destroy data, in the order you will meet them. Every step here names the actual variables, outputs, and error messages of the stacks — if the code and this document ever disagree, the code wins and this file has a bug.
+
+Runbooks 1–8 cover the capacity-block stacks (`stacks/purchase/` + `stacks/runtime/`); runbooks 9–14 cover the on-demand GPU fleet (`stacks/fleet/`).
 
 1. [Purchase a capacity block](#1-purchase-a-capacity-block)
 2. [Pre-activation provisioning (`launch_instance = false`)](#2-pre-activation-provisioning-launch_instance--false)
@@ -10,6 +12,12 @@ The procedures that spend money or destroy data, in the order you will meet them
 6. [Next block and overlapping blocks](#6-next-block-and-overlapping-blocks)
 7. [Toggling FSx on a live deployment](#7-toggling-fsx-on-a-live-deployment)
 8. [Credentials hygiene on the instances](#8-credentials-hygiene-on-the-instances)
+9. [Fleet launch](#9-fleet-launch)
+10. [Fleet updates and scaling](#10-fleet-updates-and-scaling)
+11. [Fleet partial capacity](#11-fleet-partial-capacity)
+12. [Fleet status and debugging](#12-fleet-status-and-debugging)
+13. [Fleet completion and teardown](#13-fleet-completion-and-teardown)
+14. [Fleet credentials stance](#14-fleet-credentials-stance)
 
 ---
 
@@ -274,4 +282,277 @@ The instances launch with **no IAM instance profile** — they have no AWS ident
 - **Never paste long-lived AWS keys onto a box.** The instances are SSH-reachable, short-lived, and terminated by AWS on a schedule; a leaked key outlives all of that.
 - **Route S3 checkpointing through `/data` auto-export.** Writing checkpoints to `/data` and letting the DRA export them (runbook 4.3 to verify) gives you S3 durability with zero credentials on the instance.
 
-If a workload genuinely must call AWS APIs from the instance, that is a deliberate infrastructure change (an instance profile with a scoped role) — not an `aws configure` on the box.
+If a workload genuinely must call AWS APIs from the instance, that is a deliberate infrastructure change (an instance profile with a scoped role) — not an `aws configure` on the box. The fleet stack is exactly that deliberate change — runbook 14 explains its role and the enumerated grants.
+
+---
+
+## 9. Fleet launch
+
+**Money:** on-demand billing starts the moment the instances launch and **the meter runs until you act** — `instance_count` × ~$2/hour for the default `g6e.xlarge`, plus the gp3 root volumes. Pausing (`instance_count = 0`) or destroying stops it; nothing stops it for you.
+
+### 9.1 Pre-check the vCPU quota (the most likely first-apply failure)
+
+The fleet's `g6e` instances draw from the **"Running On-Demand G and VT instances" vCPU quota (`L-DB2E81BA`), which defaults to 0 on new accounts** — so the most likely first-apply failure is quota, not capacity. A `g6e.xlarge` has 4 vCPUs: a fleet of X nodes needs at least 4·X vCPUs of quota. Check before applying:
+
+```bash
+aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA
+```
+
+If `Quota.Value` is below 4·X, request an increase (approval is not instant — do this ahead of the day you need the fleet):
+
+```bash
+aws service-quotas request-service-quota-increase \
+  --service-code ec2 --quota-code L-DB2E81BA --desired-value 32   # e.g. 8 × g6e.xlarge
+```
+
+### 9.2 Pre-check AZ offerings
+
+`g6e` is offered in roughly a dozen regions (see the README's fleet section), and within a region **not every AZ offers it**. List the AZs that do:
+
+```bash
+aws ec2 describe-instance-type-offerings --location-type availability-zone \
+  --filters Name=instance-type,Values=g6e.xlarge --region <region>
+```
+
+Set `subnet_azs` to suffixes of AZs that appear in the output (e.g. `["a", "b"]` for `us-east-2a`/`us-east-2b`). Instances spread across the listed AZs round-robin.
+
+### 9.3 The tfvars walk-through
+
+In `stacks/fleet/`, copy `terraform.tfvars.example` to `terraform.tfvars`. A minimal working file:
+
+```hcl
+region            = "us-east-2"
+subnet_azs        = ["a", "b"]                       # from the 9.2 offering check
+admin_cidr_blocks = ["203.0.113.7/32"]               # your IP: curl -s ifconfig.me
+public_key        = "ssh-ed25519 AAAA... you@host"   # scripts/generate-key.sh prints this line
+
+docker_image = "123456789012.dkr.ecr.us-east-2.amazonaws.com/train@sha256:<digest>"
+s3_bucket    = "my-training-data"
+
+instance_count = 4
+```
+
+- `docker_image` — the container every node runs. A private-ECR URI is detected by shape and gets automatic login at boot plus a pull grant scoped to exactly that repository (registry region parsed from the URI, so cross-region pulls work); any other registry (`ghcr.io`, `public.ecr.aws`, `docker.io`, ...) gets no ECR grant. **Digest-pin (`@sha256:...`)** — see runbook 10.
+- `s3_bucket` — bare bucket name, not an `s3://` URI; the bucket is yours, not managed by this stack. The role reads the whole bucket and writes only under `s3_output_prefix` (default `"outputs"`). **Keep input data outside that prefix** — runbook 14.
+- Key material — set exactly one of `public_key` (registered under the `key_pair_name` prefix; AWS appends a random suffix) or `existing_key_pair_name`.
+- `admin_cidr_blocks` — required for CLI-initiated `aws ec2-instance-connect ssh` and plain ssh; the browser-console EIC path needs no entry ([docs/admin-access.md](admin-access.md)).
+- Optional: `container_env` (never secrets — runbook 14), `container_run_args` (e.g. `"--shm-size=8g"` for PyTorch dataloaders), `restart_policy` / `restart_max_retries`.
+
+### 9.4 Apply
+
+```bash
+tofu init
+tofu apply
+```
+
+Each node boots, logs into ECR if needed, pulls the image, and runs exactly one container named `fleet-job` with `NODE_INDEX` in [0, X) and `NODE_COUNT = X` injected. Expect occasional benign plan diffs on the `ssh_eic` security-group rules later — the EC2 Instance Connect service ranges drift over time; just apply them.
+
+### 9.5 Verify every shard is running
+
+```bash
+tofu output connect_commands_eic    # one ready-to-paste command per node index
+aws ec2-instance-connect ssh --instance-id i-... --os-user ec2-user
+```
+
+On each node:
+
+```bash
+docker inspect -f '{{.State.Status}}' fleet-job   # expect: running
+docker logs fleet-job --tail 50
+```
+
+A node whose boot failed prints a loud warning on every login (the `/etc/profile.d/00-fleet-broken.sh` marker — runbook 12.3). For the whole-fleet status one-liner, see runbook 12.2. **N running containers out of X is not a healthy fleet** — runbook 11.3.
+
+---
+
+## 10. Fleet updates and scaling
+
+### 10.1 Replacement IS the deployment mechanism
+
+**Any change to `docker_image`, `container_env`, `container_run_args`, `restart_policy` / `restart_max_retries`, `enable_container_logs`, or `instance_count` replaces every instance in the fleet.** The shard math, the image, and every env var are baked into `user_data`, and cloud-init runs once per instance — so the stack sets `user_data_replace_on_change = true` and a fresh boot is the only deployment path. This is the exact inverse of the runtime stack (which ignores `user_data` changes to protect prepaid capacity-block instances — runbook 7.2); the fleet is stateless, cheap capacity, and the plan will honestly say `must be replaced`. That is the mechanism working, not breakage.
+
+There is deliberately no `create_before_destroy`: an overlap would run two live nodes with the same `NODE_INDEX`, double-processing (and double-writing) that shard.
+
+One replacement trigger is **not** operator-initiated: with `ami_id` unset, every plan re-resolves the SSM `latest` DLAMI pointer, so an AWS-side AMI release turns your next apply — however unrelated — into a full-fleet replacement. During a batch, pin the current AMI into `ami_id` (`tofu output -raw resolved_ami_id` prints it ready to copy), and unpin between batches. Do **not** work around it with `ignore_changes` on `ami` — that reintroduces the silent-no-op class this stack deliberately rejects.
+
+### 10.2 Digest-pin the image
+
+Use `@sha256:...` URIs, not mutable tags:
+
+```hcl
+docker_image = "123456789012.dkr.ecr.us-east-2.amazonaws.com/team/train@sha256:4f5c..."
+```
+
+With a `:latest`-style tag, a partial replacement (say, after a capacity failure — runbook 11) re-pulls whatever the tag points at *now*, and the fleet goes version-heterogeneous without any diff in the plan. The ECR URI parser handles digest pins and nested repository paths (`team/train@sha256:...`); deploying a new version = changing the digest and applying.
+
+### 10.3 A replacement re-runs EVERY index from scratch
+
+Replaced nodes restart their shards from zero — the stack has no memory of partial progress. **Make the container idempotent per shard**: check for a completion marker (or the output object itself) under `s3://<s3_bucket>/<s3_output_prefix>/` at startup and exit 0 if the shard is already done. Then a fleet-wide replacement after 90% completion re-does only the missing 10%.
+
+### 10.4 Scaling, and why count changes are two-phase
+
+Scale-down removes tail indices (`instance_count` 8 → 6 destroys nodes 6 and 7) — but any count change also rewrites `NODE_COUNT` in every survivor's `user_data`, so **all** nodes are replaced, not just the tail. Because new tail indices are created in parallel with the old nodes' destroy, a direct count change briefly runs old-count and new-count nodes side by side **with conflicting `NODE_COUNT`** — two different shard partitions of the same input, writing to the same prefix. The safe sequence is two-phase:
+
+```bash
+# 1. instance_count = 0 in terraform.tfvars
+tofu apply
+tofu output instance_ids    # confirm: {} — the fleet is empty
+
+# 2. instance_count = <new X> in terraform.tfvars
+tofu apply
+```
+
+Image/env-only changes (count unchanged) do not shift the shard math and need no pause — every replacement node computes the same partition as its predecessor.
+
+---
+
+## 11. Fleet partial capacity
+
+### 11.1 Quota and capacity failures look different — read the error
+
+An apply can fail on some indices and succeed on others. The two failure shapes:
+
+**Quota** (fix: runbook 9.1 — retrying or steering AZs will not help):
+
+> Error: creating EC2 Instance: ... VcpuLimitExceeded: You have requested more vCPU capacity than your current vCPU limit of 0 allows for the instance bucket that the specified instance type belongs to.
+
+**Insufficient capacity — "ICE"** (AWS is genuinely out of `g6e` in that AZ right now):
+
+> Error: creating EC2 Instance: ... InsufficientInstanceCapacity: We currently do not have sufficient g6e.xlarge capacity in the Availability Zone you requested (us-east-2a).
+
+### 11.2 Recovering from ICE: steer `subnet_azs`
+
+Instances spread across the `subnet_azs` subnets by `element()` — index 0 → first AZ, index 1 → second, wrapping round-robin. A plain re-apply therefore **re-targets the same failing AZ for the same indices** every time. Instead, steer: re-run the offering check (runbook 9.2), then drop or replace the failing AZ's suffix in `subnet_azs`.
+
+**Changing `subnet_azs` reorders the `element()` spread and replaces instances** — the surviving nodes' subnets shift. Steer it while the fleet is down (during a failed launch, or after `instance_count = 0` — runbook 10.4), or expect the plan to replace running nodes.
+
+### 11.3 A partial fleet means an incomplete batch
+
+Sharding is static: node i processes shard i of X, and nothing rebalances. If only N of X instances launched, the running containers are healthy, busy, and **the batch can never complete** — the missing indices' shards are simply never processed. Always compare:
+
+```bash
+tofu output instance_ids    # keyed by node index — every index in [0, X) must be present
+```
+
+against `instance_count` after any apply that reported errors, before trusting the fleet to finish.
+
+---
+
+## 12. Fleet status and debugging
+
+### 12.1 The outputs
+
+`instance_ids`, `instance_public_ips`, and `instance_public_dns` are maps keyed by node index; `connect_commands_eic` and `connect_commands_ssh` print one ready-to-paste command per index; `container_log_group` names the CloudWatch log group (null when `enable_container_logs = false`).
+
+### 12.2 Whole-fleet container status in one loop
+
+Plain ssh over the public DNS names (your IP must be in `admin_cidr_blocks`, and the fleet's private key loaded, e.g. via `ssh-add`):
+
+```bash
+tofu output -json instance_public_dns \
+  | jq -r 'to_entries[] | "\(.key) \(.value)"' \
+  | while read -r idx host; do
+      printf 'node %s: ' "$idx"
+      ssh -o BatchMode=yes -o ConnectTimeout=5 "ec2-user@$host" \
+        "docker inspect -f '{{.State.Status}}' fleet-job" 2>/dev/null || echo unreachable
+    done
+```
+
+Expect `running` on every index. `exited` means the shard finished (exit 0, never re-run under the default `restart_policy = "on-failure"`) or exhausted its retries — `docker inspect -f '{{.State.ExitCode}}' fleet-job` distinguishes them.
+
+### 12.3 A broken node announces itself
+
+Any boot failure (docker not up, ECR login, pull, or `docker run`) leaves three loud traces on the node:
+
+- a warning printed by **every** SSH login, via the marker file `/etc/profile.d/00-fleet-broken.sh`;
+- a `FATAL:` line in `/var/log/cloud-init-output.log` saying which step failed;
+- a nonzero cloud-init exit.
+
+The boot script is idempotent by design — after fixing the cause (a bad image reference, a missing ECR grant), re-run it in place:
+
+```bash
+sudo bash /var/lib/cloud/instance/scripts/part-001
+```
+
+A successful re-run removes the marker. Alternatively, `tofu apply -replace='aws_instance.fleet[<index>]'` recycles just that node.
+
+### 12.4 Container logs in CloudWatch
+
+With `enable_container_logs = true` (the default), every container's stdout/stderr ships to the log group `/multi-scale-fleet/containers`, one stream per node named `multi-scale-fleet-<index>` — container restarts keep appending to the same stream:
+
+```bash
+aws logs tail /multi-scale-fleet/containers --follow                                  # whole fleet
+aws logs tail /multi-scale-fleet/containers --log-stream-names multi-scale-fleet-3    # one node
+```
+
+**This log group is Terraform-managed: `tofu destroy` deletes it and every log event in it** — runbook 13.3.
+
+---
+
+## 13. Fleet completion and teardown
+
+### 13.1 Verify the outputs before touching anything
+
+The batch's results live under the output prefix — confirm every shard delivered before pausing or destroying:
+
+```bash
+aws s3 ls s3://<s3_bucket>/<s3_output_prefix>/ --recursive
+```
+
+Count against what X shards should have produced (per-shard completion markers — runbook 10.3 — make this a one-glance check). The instances hold nothing durable: root volumes die with them (`delete_on_termination`), and **only what reached S3 survives**.
+
+### 13.2 Pause vs destroy
+
+- **Pause:** set `instance_count = 0` and apply. The GPU meter stops; the VPC, security group, key pair, IAM role, and log group persist at near-zero cost, and the next batch is one `instance_count` change away. This is the right resting state between runs.
+- **Destroy:** `tofu destroy` removes everything, including the networking, role — and the log group.
+
+### 13.3 What destroy kills
+
+**Destroy is SIGKILL for the containers.** Terminating an instance gives a running container no meaningful chance to finish an S3 upload, and an interrupted multipart upload leaves **invisible abandoned parts that bill forever** (they never appear in `aws s3 ls`). Since the bucket is operator-owned (this stack never touches it), add a lifecycle rule once per bucket:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --bucket <s3_bucket> \
+  --lifecycle-configuration '{"Rules": [{"ID": "abort-incomplete-mpu", "Status": "Enabled",
+    "Filter": {}, "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}}]}'
+```
+
+**Destroy also deletes the CloudWatch log group `/multi-scale-fleet/containers` and every log in it** — the group is Terraform-managed, not driver-created. Read or export anything you still need **before** the destroy:
+
+```bash
+aws logs tail /multi-scale-fleet/containers --since 72h > fleet-logs.txt
+```
+
+---
+
+## 14. Fleet credentials stance
+
+### 14.1 Why this stack has an instance role when runbook 8 refuses one
+
+The runtime stack's instances carry no AWS identity because FSx's S3 link moves their data without credentials. The fleet has no FSx: its containers must pull an image and move data through S3 themselves, and the alternative to a role is pasting static keys onto boxes — exactly what runbook 8 forbids. So the fleet role exists, and it grants **exactly** this and nothing else:
+
+- `ecr:GetAuthorizationToken` on `*` — an API constraint: the action cannot be resource-scoped — plus `ecr:BatchCheckLayerAvailability`, `ecr:GetDownloadUrlForLayer`, and `ecr:BatchGetImage` on the **one** repository ARN parsed from `docker_image`; the whole ECR grant exists **only** when the image URI is private ECR.
+- `s3:ListBucket` on `s3_bucket`, and `s3:GetObject` bucket-wide.
+- `s3:PutObject`, `s3:AbortMultipartUpload`, and `s3:ListMultipartUploadParts` **only** under `<s3_bucket>/<s3_output_prefix>/*`.
+- `logs:CreateLogStream` and `logs:PutLogEvents` on the fleet log group only — and only while `enable_container_logs = true`.
+
+### 14.2 The no-secrets rule
+
+**Never put secrets in `container_env` or `container_run_args`.** Both are baked into `user_data`, so every value lands in **plaintext OpenTofu state** and is readable by anyone with `ec2:DescribeInstanceAttribute`:
+
+```bash
+aws ec2 describe-instance-attribute --instance-id i-... --attribute userData   # base64 of the whole boot script
+```
+
+Fetch secrets **at runtime, inside the container**, using the instance role as the credential. The role above has no Secrets Manager or SSM grant — adding a scoped read for the one secret the workload needs is the deliberate infrastructure change runbook 8 describes, not a reason to widen `container_env`.
+
+### 14.3 Shell access inherits the role
+
+Anyone who can SSH to a node (any CIDR in `admin_cidr_blocks`, any admin with EIC push rights) can read the role's credentials from IMDS — including the **bucket-wide `s3:GetObject`**. Treat node shell access as read access to the entire `s3_bucket`, and do not co-locate unrelated sensitive data in it.
+
+### 14.4 Keep inputs OUTSIDE the output prefix
+
+The write grant is scoped to `<s3_output_prefix>/*`, which is what keeps input data read-only to the fleet. An input object stored **under** the prefix loses that guarantee: any node (or anything that compromises a node) can overwrite it. Inputs anywhere else in the bucket; outputs under the prefix; never mix.
+
+### 14.5 IMDSv2 hop limit is 2 — leave it
+
+The instances enforce IMDSv2 with `http_put_response_hop_limit = 2` so the **container** can reach the role credentials through docker's NAT hop — both the `awslogs` log driver and any AWS SDK inside the container depend on it. "Hardening" it to 1 breaks the fleet's entire credential path.
