@@ -1,6 +1,6 @@
 # multi-scale-infrastructure
 
-AWS infrastructure for the Multi-Scale project: OpenTofu configuration to purchase EC2 Capacity Blocks for ML (p5.48xlarge / p5en.48xlarge), launch GPU instances into them, and optionally attach an S3-linked FSx for Lustre file system at `/data`.
+AWS infrastructure for the Multi-Scale project: OpenTofu configuration to purchase EC2 Capacity Blocks for ML (p5.48xlarge / p5en.48xlarge), launch GPU instances into them, and optionally attach an S3-linked FSx for Lustre file system at `/data` — plus a separate [on-demand GPU fleet](#the-on-demand-gpu-fleet-stacksfleet) for sharded batch jobs on cheaper instances, no capacity block required.
 
 > [!CAUTION]
 > **This repository can spend real money — a lot of it.**
@@ -8,7 +8,7 @@ AWS infrastructure for the Multi-Scale project: OpenTofu configuration to purcha
 
 Operational documentation:
 
-- [docs/runbooks.md](docs/runbooks.md) — purchase, pre-activation provisioning, launch, block expiry and data safety, teardown order, next block, FSx toggling, credentials hygiene.
+- [docs/runbooks.md](docs/runbooks.md) — purchase, pre-activation provisioning, launch, block expiry and data safety, teardown order, next block, FSx toggling, credentials hygiene; for the fleet: launch, updates and scaling, partial capacity, status and debugging, completion and teardown, credentials stance.
 - [docs/admin-access.md](docs/admin-access.md) — connecting via EC2 Instance Connect, plus the sample admin IAM policy.
 
 ## What each apply creates — and spends
@@ -19,21 +19,23 @@ Operational documentation:
 | **purchase** stack with `capacity_block_offering_id` + `expected_upfront_fee` set | The capacity block reservation | The **full upfront fee, immediately, non-refundable** — typically four to five figures |
 | **runtime** stack with `launch_instance = false` | VPC, public subnet, IGW, security group, key pair; FSx for Lustre + S3 link if `enable_fsx = true` | VPC pieces are effectively free; **FSx bills hourly from creation**, block active or not |
 | **runtime** stack with `launch_instance = true` | The GPU instance(s) in the block | Block compute is already paid; adds the gp3 root EBS volume(s) and data transfer |
+| **fleet** stack | Own VPC (one subnet per AZ), security group, key pair, instance role, log group, X on-demand GPU instances | On-demand hourly billing — **the meter runs until you act**: X × ~$2/hr for the default `g6e.xlarge`, plus gp3 root volumes; `instance_count = 0` or destroy stops it ([runbook 13](docs/runbooks.md#13-fleet-completion-and-teardown)) |
 
 ## Repository layout
 
 - `stacks/purchase/` — search capacity block offerings and (deliberately, double-confirmed) purchase one. Isolated state; **write-once** — one purchase per state.
 - `stacks/runtime/` — VPC, security, key pair, GPU instance(s), optional FSx for Lustre. Isolated state; one deployment per block.
+- `stacks/fleet/` — the on-demand GPU fleet: multi-AZ VPC, security, key pair, scoped instance role, X sharded container nodes. Isolated state; no capacity block involved.
 - `scripts/` — helper scripts ([scripts/generate-key.sh](scripts/generate-key.sh) for local SSH key generation).
 - `docs/` — plans, runbooks, and the admin access guide.
 
-The two stacks keep separate state on purpose: nothing you do in the runtime stack — including `tofu destroy` — can ever touch the non-refundable reservation.
+The stacks keep separate state on purpose: nothing you do in the runtime or fleet stacks — including `tofu destroy` — can ever touch the non-refundable reservation.
 
 ## Requirements
 
 - OpenTofu >= 1.10 (S3-native state locking; this repo is developed against 1.11)
 - AWS provider >= 6.53, < 7.0
-- AWS credentials with EC2 capacity-block, VPC, FSx, and key-pair permissions
+- AWS credentials with EC2 capacity-block, VPC, FSx, and key-pair permissions; the fleet stack additionally needs IAM (role / instance profile) and CloudWatch Logs permissions
 
 ## Quickstart: the two-stack workflow
 
@@ -109,9 +111,64 @@ Set `launch_instance = true` and apply. While the block is still `scheduled`, th
 
 Purchase-as-code is optional. Buying the capacity block in the AWS console (EC2 → Capacity Reservations → Capacity Blocks for ML) or with `aws ec2 purchase-capacity-block` and feeding the resulting reservation ID straight into the runtime stack's `capacity_reservation_id` is **fully supported** — and simpler when you don't need the purchase itself under version control. The runtime stack does not care where the reservation came from; it derives the AZ, instance type, and capacity from the reservation ID either way. In that case you never touch `stacks/purchase/` at all.
 
+## The on-demand GPU fleet (`stacks/fleet`)
+
+The fleet is the third stack, and the opposite trade from the p5 stacks: instead of prepaying a capacity block for a guaranteed window of top-end GPUs, it launches **cheap, immediate, elastic** on-demand instances (default `g6e.xlarge`, one NVIDIA L40S each, ~$2/hr) — no upfront fee, no start date, resize or stop whenever you like, but no capacity guarantee either. Use the p5 stacks for a big training run on reserved hardware; use the fleet for sharded batch work — data preprocessing, embedding generation, evaluation sweeps — that wants X nodes now and zero nodes when it is done.
+
+Each of the X nodes boots, pulls your container image, and runs exactly one container with `NODE_INDEX` (0 to X−1) and `NODE_COUNT` (X) injected as environment variables — your container picks its shard from those two numbers. Data moves through one S3 bucket via a tightly scoped instance role: read anywhere in the bucket, write only under an output prefix ([runbook 14](docs/runbooks.md#14-fleet-credentials-stance)).
+
+### Fleet quickstart
+
+Three variables do the real work — `docker_image`, `s3_bucket`, and `instance_count` — plus region, key material, and your admin IP:
+
+```bash
+cd stacks/fleet
+cp terraform.tfvars.example terraform.tfvars
+```
+
+```hcl
+# terraform.tfvars
+region            = "us-east-2"
+admin_cidr_blocks = ["203.0.113.7/32"]               # your IP: curl -s ifconfig.me
+public_key        = "ssh-ed25519 AAAA... you@host"   # scripts/generate-key.sh prints this line
+
+docker_image = "123456789012.dkr.ecr.us-east-2.amazonaws.com/train@sha256:<digest>"
+s3_bucket    = "my-training-data"
+
+instance_count = 4
+```
+
+```bash
+tofu init
+tofu apply    # 4 sharded nodes, each running one container with NODE_INDEX / NODE_COUNT
+```
+
+A private-ECR `docker_image` gets automatic registry login and a pull grant scoped to exactly that repository; any other registry (`ghcr.io`, `docker.io`, ...) works too, with no ECR grant. When the batch is done, `instance_count = 0` stops the meter and keeps everything else; changing the image, env, or count **replaces the whole fleet — deliberately** ([runbook 10](docs/runbooks.md#10-fleet-updates-and-scaling)). The full walk-through is [runbook 9](docs/runbooks.md#9-fleet-launch).
+
+### Check the vCPU quota first
+
+The fleet draws from the **G and VT on-demand vCPU quota (`L-DB2E81BA`), which defaults to 0 on new accounts** — so the most likely first-apply failure is quota, not capacity. A `g6e.xlarge` has 4 vCPUs; X nodes need 4·X. Check (and request an increase — [runbook 9.1](docs/runbooks.md#9-fleet-launch)) before the first apply:
+
+```bash
+aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA
+```
+
+### g6e region and AZ availability
+
+`g6e` is offered in roughly a dozen regions as of 2026 (AWS expands this over time), and within a region **not every AZ offers it**. Check before choosing `region` and `subnet_azs`:
+
+```bash
+aws ec2 describe-instance-type-offerings --location-type availability-zone \
+  --filters Name=instance-type,Values=g6e.xlarge --region <region>
+```
+
+If an AZ later refuses capacity mid-apply, steer `subnet_azs` — [runbook 11](docs/runbooks.md#11-fleet-partial-capacity).
+
+The fleet resolves the **AL2023** Base GPU Deep Learning AMI via SSM (no `ami_flavor` here — the frozen AL2 flavor serves no new fleet; an explicit `ami_id` bypasses SSM entirely). Like the p5 AMI, "Base" means base: NVIDIA drivers, Docker, and the container toolkit, no frameworks — bring the frameworks in your image.
+
 ## Region availability
 
-Capacity block availability differs by region **and** instance type (as of 2026-08 — AWS expands this over time, so treat the table as a hint, not validation; it is kept in sync with `stacks/purchase/terraform.tfvars.example`). An **empty search result can mean the wrong region for the chosen type**, not "no capacity".
+Capacity block availability differs by region **and** instance type (as of 2026-08 — AWS expands this over time, so treat the table as a hint, not validation; it is kept in sync with `stacks/purchase/terraform.tfvars.example`). An **empty search result can mean the wrong region for the chosen type**, not "no capacity". This table covers the capacity-block types only — for the fleet's `g6e` footprint, see [g6e region and AZ availability](#g6e-region-and-az-availability).
 
 | Region | p5.48xlarge | p5en.48xlarge |
 |---|---|---|
@@ -146,7 +203,7 @@ Run `pre-commit install` after cloning. The gates:
 
 - `tofu fmt` / `tofu validate` — style and schema correctness, per stack.
 - `tflint` — provider-aware argument linting.
-- `tofu test` — 6 purchase-stack and 26 runtime-stack tests, all mocked and plan-only: they prove the purchase gating, preconditions, and validations **without AWS credentials and without spending anything**. Run them from each stack directory.
+- `tofu test` — 7 purchase-stack, 26 runtime-stack, and 50 fleet-stack tests, all mocked and plan-only: they prove the purchase gating, preconditions, and validations **without AWS credentials and without spending anything**. Run them from each stack directory.
 - The `tofu_trivy` and `tofu_docs` hooks ship commented out in `.pre-commit-config.yaml` — enable them once `trivy` / `terraform-docs` are installed locally.
 
 No gate performs a real AWS apply. Real-account smoke checks (connecting, mounting `/data`) are operator steps documented in [docs/runbooks.md](docs/runbooks.md).
