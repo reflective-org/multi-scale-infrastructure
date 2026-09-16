@@ -1,0 +1,42 @@
+# Copy to terraform.tfvars (gitignored) and edit.
+# Variables are defined in variables.tf; see README and docs/runbooks.md
+# for the full fleet workflow before applying anything.
+
+region = "us-east-2"
+
+# --- Networking ----------------------------------------------------------
+# CIDR for the stack's self-contained VPC. Default is fine unless it
+# collides with networks you plan to peer with.
+# vpc_cidr = "10.0.0.0/16"
+#
+# Availability zone suffixes (appended to region); one public subnet per
+# entry, and instances spread across them round-robin. Steer this list when
+# an AZ has no g6e capacity — check offerings first (docs/runbooks.md):
+#   aws ec2 describe-instance-type-offerings --location-type availability-zone
+# subnet_azs = ["a", "b"]
+
+# --- Admin SSH access (see docs/admin-access.md) -------------------------
+# CLI-initiated `aws ec2-instance-connect ssh` and plain ssh connect from
+# YOUR IP, so list it here (`curl -s ifconfig.me`, then /32). The browser
+# console's EC2 Instance Connect needs no entry — the AWS service ranges
+# are always admitted. IPv4 only; 0.0.0.0/0 and ::/0 are rejected by
+# validation.
+# admin_cidr_blocks = ["203.0.113.7/32"]
+
+# --- Key pair (set exactly one of the two) --------------------------------
+# Option A: register a new key pair from a local public key. Generate one
+# with scripts/generate-key.sh — it prints this exact line. Only the public
+# key is registered; the private key never leaves your machine.
+# public_key = "ssh-ed25519 AAAA... you@host"
+#
+# Option B: reuse a key pair that already exists in this region.
+# existing_key_pair_name = "my-existing-key"
+#
+# Name PREFIX used when registering public_key (a random suffix is appended
+# so nothing collides with a p5 runtime deployment in the same region;
+# ignored for option B):
+# key_pair_name = "multi-scale-fleet"
+
+# --- Tags ------------------------------------------------------------------
+# Extra tags merged onto every resource.
+# tags = { Owner = "you" }
