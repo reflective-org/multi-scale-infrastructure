@@ -85,6 +85,10 @@ resource "aws_iam_role_policy" "ecr_pull" {
 
 # S3 data plane: read anywhere in the bucket, write ONLY under the output
 # prefix. Inputs must live outside the prefix — see var.s3_output_prefix.
+locals {
+  s3_bucket_arn = "arn:aws:s3:::${var.s3_bucket}"
+}
+
 resource "aws_iam_role_policy" "s3_data" {
   name_prefix = "s3-data-"
   role        = aws_iam_role.fleet.id
@@ -96,13 +100,13 @@ resource "aws_iam_role_policy" "s3_data" {
         Sid      = "S3ListBucket"
         Effect   = "Allow"
         Action   = "s3:ListBucket"
-        Resource = "arn:aws:s3:::${var.s3_bucket}"
+        Resource = local.s3_bucket_arn
       },
       {
         Sid      = "S3ReadBucketWide"
         Effect   = "Allow"
         Action   = "s3:GetObject"
-        Resource = "arn:aws:s3:::${var.s3_bucket}/*"
+        Resource = "${local.s3_bucket_arn}/*"
       },
       {
         Sid    = "S3WriteOutputPrefixOnly"
@@ -112,15 +116,31 @@ resource "aws_iam_role_policy" "s3_data" {
           "s3:AbortMultipartUpload",
           "s3:ListMultipartUploadParts",
         ]
-        Resource = "arn:aws:s3:::${var.s3_bucket}/${var.s3_output_prefix}/*"
+        Resource = "${local.s3_bucket_arn}/${var.s3_output_prefix}/*"
       },
     ]
   })
 }
 
-# Container logs (R8): the three write actions the awslogs driver needs
-# (awslogs-create-group=true at boot, hence CreateLogGroup), scoped to the
-# fleet's log group rather than *. Removed entirely when logs are disabled.
+# Container logs (R8). The log group is Terraform-managed rather than
+# driver-created (awslogs-create-group is deliberately NOT set at boot): with
+# up to 64 nodes booting at once, per-node CreateLogGroup calls against the
+# same name race CloudWatch's rate limits — a throttled loser would trip the
+# boot script's loud-failure path over pure setup noise. Managing it here
+# also keeps the group in state (destroy removes it — the runbook says to
+# read/export logs BEFORE teardown) and drops logs:CreateLogGroup from the
+# grant entirely.
+resource "aws_cloudwatch_log_group" "fleet" {
+  count = var.enable_container_logs ? 1 : 0
+
+  name = local.log_group_name
+
+  tags = local.tags
+}
+
+# The two write actions the awslogs driver needs against the existing group,
+# scoped to the fleet's log group rather than *. Removed entirely when logs
+# are disabled.
 resource "aws_iam_role_policy" "container_logs" {
   count = var.enable_container_logs ? 1 : 0
 
@@ -134,7 +154,6 @@ resource "aws_iam_role_policy" "container_logs" {
         Sid    = "WriteFleetLogGroupOnly"
         Effect = "Allow"
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
           "logs:PutLogEvents",
         ]

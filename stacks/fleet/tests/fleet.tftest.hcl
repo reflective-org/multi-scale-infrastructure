@@ -401,9 +401,10 @@ run "s3_write_follows_custom_nested_prefix" {
   }
 }
 
-# 20. Logs on by default (R8): one policy granting exactly the three write
-#     actions, scoped to the fleet log group's ARN pair — never * (account id
-#     is the mocked caller identity, region is var.region).
+# 20. Logs on by default (R8): the Terraform-managed log group plus one
+#     policy granting exactly the two write actions, scoped to the fleet log
+#     group's ARN pair — never * (account id is the mocked caller identity,
+#     region is var.region).
 run "logs_grant_present_and_group_scoped_by_default" {
   command = plan
 
@@ -413,8 +414,13 @@ run "logs_grant_present_and_group_scoped_by_default" {
   }
 
   assert {
-    condition     = toset(flatten([jsondecode(aws_iam_role_policy.container_logs[0].policy).Statement[0].Action])) == toset(["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"])
-    error_message = "The logs statement must grant exactly the three write actions the awslogs driver needs."
+    condition     = toset(flatten([jsondecode(aws_iam_role_policy.container_logs[0].policy).Statement[0].Action])) == toset(["logs:CreateLogStream", "logs:PutLogEvents"])
+    error_message = "The logs statement must grant exactly the two write actions the awslogs driver needs against the Terraform-managed group — CreateLogGroup stays out of the role."
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_log_group.fleet) == 1 && aws_cloudwatch_log_group.fleet[0].name == "/multi-scale-fleet/containers"
+    error_message = "The fleet log group must be Terraform-managed (created once, not raced by 64 booting nodes)."
   }
 
   assert {
@@ -438,6 +444,11 @@ run "logs_disabled_removes_logs_grant" {
   assert {
     condition     = length(aws_iam_role_policy.container_logs) == 0
     error_message = "enable_container_logs = false must remove the logs policy entirely."
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_log_group.fleet) == 0
+    error_message = "enable_container_logs = false must remove the log group too."
   }
 
   assert {
@@ -890,8 +901,8 @@ run "logs_enabled_renders_full_awslogs_flag_set" {
   }
 
   assert {
-    condition     = strcontains(aws_instance.fleet[0].user_data, "--log-opt awslogs-create-group=true")
-    error_message = "awslogs-create-group=true must be set — nothing else creates the group."
+    condition     = !strcontains(aws_instance.fleet[0].user_data, "awslogs-create-group")
+    error_message = "awslogs-create-group must NOT be set — the group is Terraform-managed, and per-node creation races CloudWatch rate limits at fleet scale."
   }
 
   assert {

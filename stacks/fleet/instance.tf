@@ -29,11 +29,6 @@ locals {
   # policies take no retry count (restart_max_retries is ignored for them —
   # said on both variables).
   restart_spec = var.restart_policy == "on-failure" ? "on-failure:${var.restart_max_retries}" : var.restart_policy
-
-  # Registry host for docker login, rebuilt from the URI-parsed account and
-  # region (main.tf owns the parse). Empty for non-ECR images — the template
-  # never renders it then.
-  ecr_registry_host = local.is_ecr ? "${local.ecr_account}.dkr.ecr.${local.ecr_region}.amazonaws.com" : ""
 }
 
 resource "aws_instance" "fleet" {
@@ -109,6 +104,12 @@ resource "aws_instance" "fleet" {
   # that shard.
   # ==========================================================================
   user_data_replace_on_change = true
+
+  # The boot script does NOT create the log group (no awslogs-create-group):
+  # the Terraform-managed group in iam.tf must exist before any node's
+  # docker run references it, and user_data is opaque to the graph — so the
+  # ordering must be stated explicitly.
+  depends_on = [aws_cloudwatch_log_group.fleet]
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-${count.index}" })
 }

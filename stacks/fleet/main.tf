@@ -31,11 +31,17 @@ locals {
   # label, region the ecr label. Captures: [account, region, path-and-ref].
   ecr_registry_regex = "^([0-9]+)\\.dkr\\.ecr\\.([a-z0-9-]+)\\.amazonaws\\.com/(.+)$"
 
-  is_ecr = can(regex(local.ecr_registry_regex, var.docker_image))
-
-  ecr_parts   = local.is_ecr ? regex(local.ecr_registry_regex, var.docker_image) : ["", "", ""]
+  # One regex evaluation: try() yields the captures on a match and the empty
+  # sentinel otherwise. The account capture is [0-9]+, so a match always has a
+  # non-empty first element — is_ecr derives from that.
+  ecr_parts   = try(regex(local.ecr_registry_regex, var.docker_image), ["", "", ""])
+  is_ecr      = local.ecr_parts[0] != ""
   ecr_account = local.ecr_parts[0]
   ecr_region  = local.ecr_parts[1]
+
+  # Registry host for docker login: the substring before the URI's first "/"
+  # (is_ecr already proved the shape), not a re-concatenation of the parts.
+  ecr_registry_host = local.is_ecr ? split("/", var.docker_image)[0] : ""
 
   # Repository path = everything after the host's first "/", stripped of the
   # trailing ref. Two ref shapes exist and both must parse (the runbook

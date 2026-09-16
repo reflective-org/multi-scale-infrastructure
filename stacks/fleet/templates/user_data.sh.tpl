@@ -90,7 +90,6 @@ docker run -d \
   --log-driver awslogs \
   --log-opt awslogs-group=${log_group_name} \
   --log-opt awslogs-region=${region} \
-  --log-opt awslogs-create-group=true \
   --log-opt awslogs-stream=${log_stream} \
 %{ endif ~}
   ${run_tail} \
