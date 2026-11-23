@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (git-ignored) and adjust.
+
+region = "us-east-1"
+
+# On while an addition is open, off between additions. Check that no stage is
+# running before setting false (docs/model-additions.md).
+running = true
+
+# instance_type        = "m7i.2xlarge"   # 8 vCPU, 32 GiB; CPU only
+# data_volume_size_gib = 200             # /srv/model-additions
+# availability_zone    = "us-east-1a"    # default: first available AZ

@@ -10,6 +10,7 @@ Operational documentation:
 
 - [docs/runbooks.md](docs/runbooks.md) — purchase, pre-activation provisioning, launch, block expiry and data safety, teardown order, next block, FSx toggling, credentials hygiene.
 - [docs/admin-access.md](docs/admin-access.md) — connecting via EC2 Instance Connect, plus the sample admin IAM policy.
+- [docs/model-additions.md](docs/model-additions.md) — the CPU host for the aerosol model-addition automation (`stacks/model-additions/`).
 
 ## What each apply creates — and spends
 
@@ -24,6 +25,7 @@ Operational documentation:
 
 - `stacks/purchase/` — search capacity block offerings and (deliberately, double-confirmed) purchase one. Isolated state; **write-once** — one purchase per state.
 - `stacks/runtime/` — VPC, security, key pair, GPU instance(s), optional FSx for Lustre. Isolated state; one deployment per block.
+- `stacks/model-additions/` — CPU host for the aerosol model-addition runners: VPC, no-inbound security group, SSM-only role, Ubuntu instance, data volume, on/off switch. Isolated state.
 - `scripts/` — helper scripts ([scripts/generate-key.sh](scripts/generate-key.sh) for local SSH key generation).
 - `docs/` — plans, runbooks, and the admin access guide.
 
