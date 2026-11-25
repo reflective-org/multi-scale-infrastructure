@@ -39,9 +39,14 @@ an `m7i.2xlarge` on demand in us-east-1 is roughly $0.40 an hour.
    ```bash
    cd stacks/model-additions
    cp terraform.tfvars.example terraform.tfvars
-   tofu init
+   cp backend.hcl.example backend.hcl    # fill in the state bucket and its region
+   tofu init -backend-config=backend.hcl
    tofu apply
    ```
+
+   State is kept in S3 (key `multi-scale/model-additions/terraform.tfstate`), with S3
+   locking, so any machine with the bucket's details and AWS access can run the stack.
+   The bucket name isn't committed; `backend.hcl` is git-ignored.
 
 3. Wait a few minutes for the first boot, then check it finished:
 

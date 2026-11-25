@@ -1,0 +1,5 @@
+# Copy to backend.hcl (git-ignored) and fill in, then:
+#   tofu init -backend-config=backend.hcl
+# The bucket should be versioned, encrypted and block public access.
+bucket = "YOUR-tofu-state-bucket"
+region = "YOUR-bucket-region"

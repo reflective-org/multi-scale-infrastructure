@@ -8,15 +8,13 @@ terraform {
     }
   }
 
-  # Remote state (recommended). Uncomment and point at your own bucket.
-  # OpenTofu >= 1.10 supports S3-native locking (use_lockfile) — no DynamoDB
-  # table required. Never commit state; this repo's .gitignore excludes it.
-  #
-  # backend "s3" {
-  #   bucket       = "YOUR-tofu-state-bucket"
-  #   key          = "multi-scale/model-additions/terraform.tfstate"
-  #   region       = "us-east-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  # Remote state in S3, with S3-native locking (use_lockfile; no DynamoDB table).
+  # The bucket and its region aren't committed: copy backend.hcl.example to
+  # backend.hcl (git-ignored), fill them in, and run
+  # `tofu init -backend-config=backend.hcl`. Never commit state.
+  backend "s3" {
+    key          = "multi-scale/model-additions/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
+  }
 }
