@@ -54,7 +54,10 @@ done
 SCRIPT
 )
 
-params="$(jq -n --arg s "$script" '{commands: [$s]}')"
+# AWS-RunShellScript runs commands with /bin/sh (dash on Ubuntu), which has no
+# `pipefail`, so hand the script to bash.
+encoded="$(printf '%s\n' "$script" | base64 | tr -d '\n')"
+params="$(jq -n --arg s "echo $encoded | base64 -d | bash" '{commands: [$s]}')"
 command_id="$(aws ssm send-command --region "$region" \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
