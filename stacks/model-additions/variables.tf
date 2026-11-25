@@ -20,6 +20,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "environment" {
+  description = "Value of the Environment tag on every resource."
+  type        = string
+  default     = "production"
+}
+
 # ---------------------------------------------------------------------------
 # Networking
 # ---------------------------------------------------------------------------
