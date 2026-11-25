@@ -22,9 +22,12 @@ locals {
 
   tags = merge(
     {
-      Project   = "model-additions"
-      Stack     = "model-additions"
-      ManagedBy = "opentofu"
+      Org         = "data-infra"
+      Team        = "multi-scale"
+      Project     = "aerosol-microphysics-model-additions"
+      Environment = var.environment
+      Stack       = "model-additions"
+      ManagedBy   = "opentofu"
     },
     var.tags,
   )
