@@ -62,7 +62,12 @@ resource "aws_instance" "host" {
     # script should replace or restart a running host. A host built from
     # current config needs `tofu apply -replace=aws_instance.host` (the data
     # volume survives it; see docs/model-additions.md).
-    ignore_changes = [ami, user_data]
+    #
+    # A stopped instance releases its public IP, and AWS then reports
+    # associate_public_ip_address = false. That attribute forces replacement, so
+    # without ignoring it, stopping or starting the host (`running`) would
+    # rebuild it.
+    ignore_changes = [ami, user_data, associate_public_ip_address]
   }
 }
 
